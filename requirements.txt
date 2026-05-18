@@ -1,0 +1,7 @@
+endplay
+torch
+gymnasium
+numpy
+fastapi
+uvicorn[standard]
+tqdm

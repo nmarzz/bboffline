@@ -1,0 +1,675 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Bridge Bidding</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  font-family: 'Georgia', serif;
+  background: #1a5c2a;
+  color: #f0f0f0;
+  min-height: 100vh;
+  padding: 16px;
+}
+
+h1 {
+  text-align: center;
+  font-size: 1.4rem;
+  letter-spacing: 3px;
+  margin-bottom: 16px;
+  text-transform: uppercase;
+  color: #ffd700;
+}
+
+/* Controls */
+.controls {
+  display: flex;
+  gap: 12px;
+  align-items: flex-end;
+  justify-content: center;
+  flex-wrap: wrap;
+  margin-bottom: 20px;
+}
+.ctrl-group { display: flex; flex-direction: column; gap: 4px; }
+.ctrl-label { font-size: 0.72rem; color: #9cba9e; text-transform: uppercase; letter-spacing: 1px; }
+select {
+  padding: 6px 10px;
+  border-radius: 6px;
+  border: 1px solid #3a8a4a;
+  background: #0f3d18;
+  color: #eee;
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+.btn {
+  padding: 7px 16px;
+  border-radius: 6px;
+  border: none;
+  cursor: pointer;
+  font-size: 0.9rem;
+  font-family: 'Georgia', serif;
+  transition: opacity 0.15s;
+}
+.btn:hover { opacity: 0.85; }
+.btn:disabled { opacity: 0.35; cursor: not-allowed; }
+.btn-primary { background: #ffd700; color: #1a1a1a; font-weight: bold; }
+.btn-action { background: #ffd700; color: #1a1a1a; font-weight: bold; }
+.btn-secondary { background: #2d7a3a; color: #fff; border: 1px solid #4a9a55; }
+
+.toggle-group { display: flex; border: 1px solid #3a8a4a; border-radius: 6px; overflow: hidden; }
+.toggle-group .btn {
+  border-radius: 0;
+  background: #0f3d18;
+  color: #9cba9e;
+  border: none;
+  padding: 6px 14px;
+}
+.toggle-group .btn.active { background: #ffd700; color: #1a1a1a; font-weight: bold; }
+
+/* Compass */
+.compass {
+  display: grid;
+  grid-template-areas: ". north ." "west center east" ". south .";
+  grid-template-columns: 1fr 200px 1fr;
+  grid-template-rows: auto auto auto;
+  gap: 8px;
+  max-width: 720px;
+  margin: 0 auto 14px;
+  align-items: center;
+}
+.north  { grid-area: north; justify-self: center; }
+.west   { grid-area: west; justify-self: end; }
+.center { grid-area: center; }
+.east   { grid-area: east; justify-self: start; }
+.south  { grid-area: south; justify-self: center; }
+
+.hand-box {
+  background: #fffef5;
+  color: #111;
+  border-radius: 8px;
+  padding: 10px 14px;
+  font-size: 0.92rem;
+  line-height: 1.75;
+  min-width: 130px;
+}
+.hand-box.hidden {
+  background: #123d1c;
+  border: 2px dashed #3a7a45;
+  color: #5a9a65;
+  min-width: 100px;
+  min-height: 90px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+.hand-label {
+  font-size: 0.68rem;
+  font-weight: bold;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: #888;
+  margin-bottom: 4px;
+}
+.hand-box.hidden .hand-label { color: #3a7a45; }
+.suit-row { white-space: nowrap; font-family: 'Courier New', monospace; }
+.suit-row .sym { margin-right: 4px; }
+.red   { color: #c00; }
+.black { color: #111; }
+
+/* Center info box */
+.center-box {
+  background: #0d4017;
+  border: 1px solid #2a6a30;
+  border-radius: 8px;
+  padding: 12px;
+  text-align: center;
+  min-height: 90px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+}
+.vuln-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 0.72rem;
+  font-weight: bold;
+  letter-spacing: 0.5px;
+  margin-bottom: 2px;
+}
+.vul-none { background: #555; }
+.vul-ns   { background: #b02020; }
+.vul-ew   { background: #1a48aa; }
+.vul-both { background: #b02020; outline: 2px solid #1a48aa; }
+.par-label { font-size: 0.7rem; color: #7aaa80; text-transform: uppercase; letter-spacing: 0.5px; }
+.par-contract { font-size: 1.05rem; font-weight: bold; color: #ffd700; }
+.par-score { font-size: 0.9rem; color: #aaa; }
+
+/* DD table */
+.dd-section {
+  max-width: 720px;
+  margin: 0 auto 14px;
+}
+.section-title {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: #7aaa80;
+  margin-bottom: 6px;
+}
+.dd-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+  background: #0d4017;
+  border-radius: 8px;
+  overflow: hidden;
+}
+.dd-table th, .dd-table td {
+  padding: 5px 12px;
+  text-align: center;
+  border: 1px solid #1e5c26;
+}
+.dd-table th { background: #082e10; }
+.dd-table th.denom-sym { font-size: 1.05em; }
+.ns-cell { color: #7ab8ff; }
+.ew-cell { color: #ff9090; }
+.tricks-hi { font-weight: bold; }
+
+/* Auction */
+.auction-section {
+  max-width: 720px;
+  margin: 0 auto 14px;
+  background: #0d4017;
+  border-radius: 8px;
+  padding: 14px 16px;
+}
+.auction-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 1rem;
+  margin-bottom: 12px;
+}
+.auction-table th {
+  padding: 4px 0;
+  text-align: center;
+  color: #ffd700;
+  font-size: 0.85rem;
+  font-weight: normal;
+  letter-spacing: 1px;
+  border-bottom: 1px solid #1e5c26;
+}
+.auction-table td {
+  padding: 4px 0;
+  text-align: center;
+  min-width: 48px;
+  font-size: 1rem;
+}
+.bid-ns   { color: #7ab8ff; font-weight: bold; }
+.bid-ew   { color: #ff9090; }
+.bid-pass { color: #666; }
+
+/* Suggestion bar */
+.suggestion-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  background: #071f0c;
+  border-radius: 6px;
+  margin-bottom: 8px;
+}
+.sug-player { font-size: 1rem; font-weight: bold; color: #ffd700; min-width: 22px; }
+.sug-label  { font-size: 0.85rem; color: #7aaa80; }
+.sug-bid    { font-size: 1.3rem; font-weight: bold; color: #fff; min-width: 55px; }
+.sug-btns   { display: flex; gap: 8px; margin-left: auto; }
+
+/* Result */
+.result-box {
+  background: #071f0c;
+  border-radius: 6px;
+  padding: 12px 16px;
+}
+.result-contract {
+  font-size: 1.15rem;
+  font-weight: bold;
+  color: #ffd700;
+  margin-bottom: 8px;
+}
+.result-stats {
+  display: flex;
+  gap: 24px;
+  flex-wrap: wrap;
+}
+.stat { display: flex; flex-direction: column; font-size: 0.8rem; color: #7aaa80; text-transform: uppercase; letter-spacing: 0.5px; }
+.stat .val { font-size: 1.05rem; font-weight: bold; color: #eee; margin-top: 2px; }
+.imp-pos { color: #6aff6a; }
+.imp-neg { color: #ff7070; }
+.imp-zero { color: #888; }
+
+/* Welcome message */
+.welcome {
+  max-width: 720px;
+  margin: 40px auto;
+  text-align: center;
+  color: #5a9a65;
+  font-size: 1rem;
+}
+.welcome .big { font-size: 3rem; margin-bottom: 12px; }
+</style>
+</head>
+<body>
+<h1>&#9824; Bridge Bidding &#9829;</h1>
+
+<div class="controls">
+  <div class="ctrl-group">
+    <span class="ctrl-label">Model</span>
+    <select id="sel-model"></select>
+  </div>
+  <div class="ctrl-group">
+    <span class="ctrl-label">Vulnerability</span>
+    <select id="sel-vuln">
+      <option value="none">None</option>
+      <option value="ns">N-S Vul</option>
+      <option value="ew">E-W Vul</option>
+      <option value="both">Both Vul</option>
+    </select>
+  </div>
+  <div class="ctrl-group">
+    <span class="ctrl-label">View</span>
+    <div class="toggle-group">
+      <button class="btn active" id="btn-god" onclick="setView('god')">All hands</button>
+      <button class="btn" id="btn-mine" onclick="setView('mine')">My hand</button>
+    </div>
+  </div>
+  <div class="ctrl-group">
+    <span class="ctrl-label">&nbsp;</span>
+    <button class="btn btn-primary" id="btn-new-deal" onclick="newDeal()">New Deal</button>
+  </div>
+</div>
+
+<!-- Welcome -->
+<div class="welcome" id="welcome">
+  <div class="big">&#9827;</div>
+  Select a model and click <strong style="color:#ffd700">New Deal</strong> to begin.
+</div>
+
+<!-- Compass layout -->
+<div class="compass" id="compass" style="display:none">
+  <div class="hand-box north" id="hand-N"></div>
+  <div class="hand-box west"  id="hand-W"></div>
+  <div class="center-box center" id="center-info"></div>
+  <div class="hand-box east"  id="hand-E"></div>
+  <div class="hand-box south" id="hand-S"></div>
+</div>
+
+<!-- DD Table -->
+<div class="dd-section" id="dd-section" style="display:none">
+  <div class="section-title">Double dummy tricks</div>
+  <table class="dd-table" id="dd-table"></table>
+</div>
+
+<!-- Auction -->
+<div class="auction-section" id="auction-section" style="display:none">
+  <div class="section-title">Auction &mdash; Dealer: North</div>
+  <table class="auction-table" id="auction-table">
+    <tr><th>N</th><th>E</th><th>S</th><th>W</th></tr>
+  </table>
+  <div id="suggestion-area"></div>
+  <div id="result-area" style="display:none"></div>
+</div>
+
+<script>
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+const SUIT_SYMS   = {S:'&#9824;', H:'&#9829;', D:'&#9830;', C:'&#9827;'};
+const DENOM_SYMS  = {C:'&#9827;', D:'&#9830;', H:'&#9829;', S:'&#9824;', NT:'NT'};
+const DENOM_RED   = new Set(['H','D']);
+const DIR_FULL    = {N:'North', E:'East', S:'South', W:'West'};
+const VUL_LABELS  = {none:'None', ns:'N-S Vul', ew:'E-W Vul', both:'Both Vul'};
+const VUL_CLASSES = {none:'vul-none', ns:'vul-ns', ew:'vul-ew', both:'vul-both'};
+
+// ---------------------------------------------------------------------------
+// State
+// ---------------------------------------------------------------------------
+let st = {
+  dealId:      null,
+  bids:        [],
+  hands:       null,
+  parScore:    0,
+  parContract: '',
+  vuln:        'none',
+  viewMode:    'god',
+  isComplete:  false,
+  busy:        false,
+};
+
+// ---------------------------------------------------------------------------
+// Boot
+// ---------------------------------------------------------------------------
+async function init() {
+  try {
+    const res  = await fetch('/models');
+    const data = await res.json();
+    const sel  = document.getElementById('sel-model');
+    sel.innerHTML = '';
+    data.models.forEach(m => {
+      const o = document.createElement('option');
+      o.value = m; o.textContent = m;
+      if (m === 'net_final') o.selected = true;
+      sel.appendChild(o);
+    });
+  } catch (e) {
+    console.error('Failed to load models', e);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// View mode
+// ---------------------------------------------------------------------------
+function setView(mode) {
+  st.viewMode = mode;
+  document.getElementById('btn-god').classList.toggle('active', mode === 'god');
+  document.getElementById('btn-mine').classList.toggle('active', mode === 'mine');
+  if (st.dealId) {
+    renderHands();
+    renderCenterInfo();
+    document.getElementById('dd-section').style.display = mode === 'god' ? '' : 'none';
+  }
+}
+
+// ---------------------------------------------------------------------------
+// New deal
+// ---------------------------------------------------------------------------
+async function newDeal() {
+  if (st.busy) return;
+  const model = document.getElementById('sel-model').value;
+  const vuln  = document.getElementById('sel-vuln').value;
+
+  setBusy(true);
+  try {
+    const res = await fetch('/deal', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({model, vulnerability: vuln}),
+    });
+    if (!res.ok) throw new Error(await res.text());
+    const data = await res.json();
+
+    st.dealId      = data.deal_id;
+    st.bids        = [];
+    st.hands       = data.hands;
+    st.parScore    = data.par_score;
+    st.parContract = data.par_contract;
+    st.vuln        = data.vulnerability;
+    st.isComplete  = false;
+
+    document.getElementById('welcome').style.display = 'none';
+    document.getElementById('compass').style.display = '';
+    document.getElementById('auction-section').style.display = '';
+    document.getElementById('result-area').style.display = 'none';
+    document.getElementById('suggestion-area').innerHTML = '';
+
+    renderHands();
+    renderCenterInfo();
+    renderDDTable(data.dd_table);
+    document.getElementById('dd-section').style.display = st.viewMode === 'god' ? '' : 'none';
+    resetAuctionTable();
+
+    await fetchSuggestion();
+  } catch (e) {
+    alert('Error: ' + e.message);
+  } finally {
+    setBusy(false);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Suggestion flow
+// ---------------------------------------------------------------------------
+async function fetchSuggestion() {
+  if (!st.dealId || st.isComplete) return;
+
+  const res = await fetch('/suggest', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({deal_id: st.dealId, bids: st.bids}),
+  });
+  if (!res.ok) { alert('Error: ' + await res.text()); return; }
+  const data = await res.json();
+
+  if (data.is_complete) {
+    st.isComplete = true;
+    document.getElementById('suggestion-area').innerHTML = '';
+    showResult(data);
+  } else {
+    showSuggestion(data);
+  }
+}
+
+function showSuggestion(data) {
+  const area = document.getElementById('suggestion-area');
+  area.innerHTML = `
+    <div class="suggestion-bar">
+      <span class="sug-player">${data.current_player}</span>
+      <span class="sug-label">Robot suggests</span>
+      <span class="sug-bid">${fmtBidName(data.bid_name)}</span>
+      <div class="sug-btns">
+        <button class="btn btn-action" onclick="applyBid(${data.bid_idx})">Apply</button>
+        <button class="btn btn-secondary" onclick="runToEnd()">Run to end</button>
+      </div>
+    </div>
+  `;
+}
+
+async function applyBid(bidIdx) {
+  if (st.busy || st.isComplete) return;
+  st.bids.push(bidIdx);
+  appendBidRow(bidIdx, st.bids.length - 1);
+  setBusy(true);
+  try   { await fetchSuggestion(); }
+  finally { setBusy(false); }
+}
+
+async function runToEnd() {
+  if (st.busy || st.isComplete) return;
+  setBusy(true);
+  document.getElementById('suggestion-area').innerHTML = '';
+  try {
+    while (!st.isComplete) {
+      const res  = await fetch('/suggest', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({deal_id: st.dealId, bids: st.bids}),
+      });
+      const data = await res.json();
+      if (data.is_complete) {
+        st.isComplete = true;
+        showResult(data);
+        break;
+      }
+      st.bids.push(data.bid_idx);
+      appendBidRow(data.bid_idx, st.bids.length - 1);
+      await sleep(100);
+    }
+  } finally {
+    setBusy(false);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Render: hands
+// ---------------------------------------------------------------------------
+function renderHands() {
+  ['N','E','S','W'].forEach(d => {
+    const box = document.getElementById('hand-' + d);
+    if (st.viewMode === 'god' || d === 'N') {
+      box.className = 'hand-box ' + d.toLowerCase();
+      box.innerHTML = `<div class="hand-label">${DIR_FULL[d]}</div>${buildHandHTML(st.hands[d])}`;
+    } else {
+      box.className = 'hand-box hidden ' + d.toLowerCase();
+      box.innerHTML = `<div class="hand-label">${DIR_FULL[d]}</div><div style="font-size:1.6rem">&#127136;</div>`;
+    }
+  });
+}
+
+function buildHandHTML(cards) {
+  return ['S','H','D','C'].map(suit => {
+    const ranks = cards[suit];
+    if (!ranks || !ranks.length) return '';
+    const isRed  = suit === 'H' || suit === 'D';
+    const cls    = isRed ? 'red' : 'black';
+    const ranksStr = ranks.length ? ranks.join('&nbsp;') : '&mdash;';
+    return `<div class="suit-row ${cls}"><span class="sym">${SUIT_SYMS[suit]}</span>${ranksStr}</div>`;
+  }).join('');
+}
+
+// ---------------------------------------------------------------------------
+// Render: center info
+// ---------------------------------------------------------------------------
+function renderCenterInfo() {
+  const label = st.viewMode === 'mine' ? 'Best contract' : 'Par';
+  const scoreStr = st.parScore > 0 ? `+${st.parScore}` : `${st.parScore}`;
+  const cls = VUL_CLASSES[st.vuln] || 'vul-none';
+  document.getElementById('center-info').innerHTML = `
+    <span class="vuln-badge ${cls}">${VUL_LABELS[st.vuln]}</span>
+    <div class="par-label">${label}</div>
+    <div class="par-contract">${fmtContractStr(st.parContract)}</div>
+    <div class="par-score">${scoreStr}</div>
+  `;
+}
+
+// ---------------------------------------------------------------------------
+// Render: DD table
+// ---------------------------------------------------------------------------
+function renderDDTable(ddTable) {
+  const denoms = ['C','D','H','S','NT'];
+  let html = '<tr><th></th>';
+  denoms.forEach(d => {
+    const sym   = DENOM_SYMS[d];
+    const color = DENOM_RED.has(d) ? 'color:#ff7070' : (d === 'NT' ? 'color:#ccc' : 'color:#ccc');
+    html += `<th class="denom-sym" style="${color}">${sym}</th>`;
+  });
+  html += '</tr>';
+
+  ['N','E','S','W'].forEach((p, pi) => {
+    const isNS = pi === 0 || pi === 2;
+    html += `<tr><th>${p}</th>`;
+    denoms.forEach(d => {
+      const tricks = ddTable[d][p];
+      const cell   = isNS ? 'ns-cell' : 'ew-cell';
+      const bold   = tricks >= 8 ? ' tricks-hi' : '';
+      html += `<td class="${cell}${bold}">${tricks}</td>`;
+    });
+    html += '</tr>';
+  });
+
+  document.getElementById('dd-table').innerHTML = html;
+}
+
+// ---------------------------------------------------------------------------
+// Render: auction table
+// ---------------------------------------------------------------------------
+function resetAuctionTable() {
+  document.getElementById('auction-table').innerHTML =
+    '<tr><th>N</th><th>E</th><th>S</th><th>W</th></tr>';
+}
+
+function appendBidRow(bidIdx, seqPos) {
+  const col   = seqPos % 4;
+  const row   = Math.floor(seqPos / 4);
+  const table = document.getElementById('auction-table');
+
+  // Add data row if needed
+  while (table.rows.length <= row + 1) {
+    const tr = table.insertRow();
+    for (let c = 0; c < 4; c++) tr.insertCell().innerHTML = '';
+  }
+
+  const cell  = table.rows[row + 1].cells[col];
+  const name  = bidIdxToName(bidIdx);
+  const isNS  = col === 0 || col === 2;
+  const cls   = name === 'Pass' ? 'bid-pass' : (isNS ? 'bid-ns' : 'bid-ew');
+  cell.innerHTML = `<span class="${cls}">${fmtBidName(name)}</span>`;
+}
+
+// ---------------------------------------------------------------------------
+// Render: result
+// ---------------------------------------------------------------------------
+function showResult(data) {
+  const imp    = data.imp;
+  const impCls = imp > 0 ? 'imp-pos' : (imp < 0 ? 'imp-neg' : 'imp-zero');
+  const impStr = imp > 0 ? `+${imp}` : `${imp}`;
+
+  const area = document.getElementById('result-area');
+  area.style.display = '';
+  area.innerHTML = `
+    <div class="result-box">
+      <div class="result-contract">${fmtContractStr(data.final_contract)}</div>
+      <div class="result-stats">
+        <div class="stat">N-S score<span class="val">${data.achieved_score >= 0 ? '+' : ''}${data.achieved_score}</span></div>
+        <div class="stat">Par<span class="val">${data.par_score >= 0 ? '+' : ''}${data.par_score}</span></div>
+        <div class="stat">IMPs<span class="val ${impCls}">${impStr}</span></div>
+        <div class="stat">Best contract<span class="val" style="font-size:0.9rem">${fmtContractStr(data.par_contract)}</span></div>
+      </div>
+    </div>
+  `;
+}
+
+// ---------------------------------------------------------------------------
+// Bid name helpers
+// ---------------------------------------------------------------------------
+function bidIdxToName(idx) {
+  if (idx === 0)  return 'Pass';
+  if (idx === 36) return 'X';
+  if (idx === 37) return 'XX';
+  const b     = idx - 1;
+  const level = Math.floor(b / 5) + 1;
+  const denom = ['C','D','H','S','NT'][b % 5];
+  return `${level}${denom}`;
+}
+
+function fmtBidName(name) {
+  if (name === 'Pass') return '<span style="color:#666">Pass</span>';
+  if (name === 'X')    return '<span style="color:#f90">X</span>';
+  if (name === 'XX')   return '<span style="color:#f60">XX</span>';
+  const m = name.match(/^(\d)(C|D|H|S|NT)$/);
+  if (!m) return name;
+  const [, level, denom] = m;
+  const sym   = DENOM_SYMS[denom];
+  const color = DENOM_RED.has(denom) ? '#dd3333' : (denom === 'NT' ? '#ccaa44' : 'inherit');
+  return `${level}<span style="color:${color}">${sym}</span>`;
+}
+
+function fmtContractStr(str) {
+  // "4H by N" → formatted; "Passed out" or "Pass" → plain
+  if (!str || str === 'Pass' || str === 'Passed out') return str || '—';
+  const m = str.match(/^(\d(?:C|D|H|S|NT)(?:XX?)?)( by \w+)$/);
+  if (!m) return str;
+  return `${fmtBidName(m[1])}<span style="color:#9cba9e">${m[2]}</span>`;
+}
+
+// ---------------------------------------------------------------------------
+// Utilities
+// ---------------------------------------------------------------------------
+function setBusy(v) {
+  st.busy = v;
+  document.getElementById('btn-new-deal').disabled = v;
+  document.querySelectorAll('.suggestion-bar .btn').forEach(b => b.disabled = v);
+}
+
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+// ---------------------------------------------------------------------------
+init();
+</script>
+</body>
+</html>
