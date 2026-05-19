@@ -37,15 +37,36 @@ The reward signal comes from comparing the contract reached by the agents to the
 
 ---
 
-## 3  Counterfactual Reward Estimation
+## 3  Optimal Contract and Reward
 
-A single East–West layout introduces substantial variance into the reward. If East–West happen to hold cards that make North–South's best strain easy, the reward is positive even for a mediocre bid sequence. Conversely, an unlucky EW layout can punish a good sequence.
+### 3.1  Defining the optimal contract
 
-To reduce this variance, the reward for a given North–South auction is estimated as the **expectation over K independently re-sampled EW completions**:
+The optimal contract for a given NS holding is:
 
-$$r = \frac{1}{K} \sum_{k=1}^{K} \mathrm{IMP}\!\left(\mathrm{score}(A, \text{EW}_k) - \mathrm{par}(\text{NS}, \text{EW}_k)\right)$$
+$$C^* = \underset{C}{\arg\max}\; \mathbb{E}_{\text{EW}}\!\left[\mathrm{score}(C, \text{EW}) \mid \text{NS}\right]$$
 
-where $A$ is the auction sequence, $\text{EW}_k$ is the $k$-th random EW completion holding NS fixed, and par is also computed per EW completion so the baseline is consistent with each specific layout. The NS hands are fixed (they are what drove the bidding), but the EW cards are re-shuffled $K$ times and DDS is queried for each combination. This is an unbiased estimator of the expected IMP reward conditioned on the NS hands.
+That is, the best contract is the one that maximises the *expected* NS score averaged over all possible EW holdings consistent with what NS knows. A contract may go down on unlucky EW layouts and a higher-paying alternative may make on lucky ones, but on average the bidding should reach the highest-scoring contract in expectation.
+
+### 3.2  Reward modes
+
+Two reward modes are supported via `--reward-mode`:
+
+| Mode | Formula | Default |
+|------|---------|---------|
+| `expected_score` | $\mathrm{IMP}(\mathrm{score}(A, \text{EW}_k))$ | ✓ |
+| `par_relative` | $\mathrm{IMP}(\mathrm{score}(A, \text{EW}_k) - \mathrm{par}(\text{NS}, \text{EW}_k))$ | |
+
+**`expected_score`** is the primary mode. It rewards NS directly for the IMP value of the score they achieve, with a pass-out (score = 0) mapping to exactly 0 IMPs. There is no par baseline to subtract: the agent is simply trying to maximise its expected score given its hands. This is the correct objective — par is a double-dummy concept computed on the realised EW layout, not a quantity NS can target.
+
+**`par_relative`** is retained for comparison and ablation. It measures how far NS's auction deviates from the double-dummy optimal on the realised EW layout.
+
+### 3.3  Variance reduction via EW re-sampling
+
+A single EW layout introduces substantial variance. The reward is estimated as the **expectation over K independently re-sampled EW completions**, holding NS fixed:
+
+$$r = \frac{1}{K} \sum_{k=1}^{K} \mathrm{IMP}\!\left(\mathrm{score}(A, \text{EW}_k)\right)$$
+
+The NS hands are fixed (they drove the bidding); EW cards are re-shuffled $K$ times and DDS is queried for each. This is an unbiased estimator of the expected reward conditioned on the NS hands.
 
 ---
 
@@ -135,14 +156,18 @@ The learning rate decays linearly from $3 \times 10^{-4}$ to $1 \times 10^{-4}$ 
 
 ## 7  What the Reward Incentivises
 
-The IMP table compresses the raw point difference logarithmically. This has a useful training effect: the gradient signal for catastrophically bad contracts (large negative IMPs) is not disproportionately large compared to incrementally good ones. The agent is rewarded for:
+The IMP table compresses the raw point difference logarithmically. This has a useful training effect: catastrophically bad contracts (large negative IMPs) do not generate disproportionately large gradients. The agent is rewarded for:
 
-1. **Bidding game when game makes** — the IMP swing for missing a vulnerable game is 10–12 IMPs, a strong positive incentive.
+1. **Bidding game when game makes** — game scores jump from ~170 (3M) to ~420 (4M), a gap of ~9 IMPs, giving a strong incentive to reach game when it is on.
 2. **Bidding the right strain** — a major-suit fit vs a minor-suit contract can be several hundred points, ~6 IMPs.
-3. **Not overbidding** — going down in a contract below par costs IMPs roughly proportionally to undertricks.
-4. **Slam bidding** — small slams score an additional bonus (500/750 non-vul/vul), large slams more, making them worth 11–13 extra IMPs over game.
+3. **Not overbidding** — going down scores negative IMPs; even down 1 non-vulnerable (−50) converts to −2 IMPs, and undertricks accumulate quickly.
+4. **Slam bidding** — small slam bonuses (500/750 non-vul/vul) are worth 11–13 IMPs over game; grand slams more.
 
-Because the reward is always measured relative to par, the agent has no incentive to settle for a mediocre positive score when a better contract is available.
+A passed-out auction scores exactly 0 IMPs, which is a natural floor — the agent must bid to earn positive reward. There is no par baseline to subtract, so the agent is not penalised for failing to match an unobservable double-dummy optimum.
+
+### 7.1  Strain bonus
+
+An auxiliary reward of `--strain-bonus` IMPs (default 0.5) is added whenever NS declares in the strain where they hold the most double-dummy tricks, averaged across EW re-samples. This amplifies the strain-selection signal early in training when the primary reward signal is weak. Because `expected_score` already rewards the correct strain through higher expected scores, the bonus is set conservatively; it exists to accelerate learning, not to define the objective.
 
 ---
 

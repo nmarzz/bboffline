@@ -144,6 +144,25 @@ def achieved_ns_score(table, auction: AuctionState, vulnerability: str) -> int:
         return -raw_score
 
 
+def _episode_reward(
+    achieved: int,
+    par: int,
+    reward_mode: str,
+    strain_correct: bool,
+    strain_bonus: float,
+) -> float:
+    """Compute the scalar reward for one (auction, EW layout) sample."""
+    if reward_mode == "expected_score":
+        reward = float(imps(achieved))
+    else:  # "par_relative"
+        reward = float(imps(achieved - par))
+
+    if strain_bonus > 0.0 and strain_correct:
+        reward += strain_bonus
+
+    return reward
+
+
 def batch_expected_imp_rewards(
     ep_deals,
     auctions: list,
@@ -151,12 +170,13 @@ def batch_expected_imp_rewards(
     k: int,
     rng=None,
     strain_bonus: float = 0.0,
+    reward_mode: str = "expected_score",
 ) -> tuple:
     """
     Compute counterfactual expected IMP rewards for a batch of episodes.
 
-    For each episode, re-deals the E-W cards k times and averages the IMP
-    reward across those samples.  Because N-S can only act on their own hands,
+    For each episode, re-deals the E-W cards k times and averages the reward
+    across those samples.  Because N-S can only act on their own hands,
     judging a bid sequence on a single E-W layout is noisy — averaging over
     many E-W completions reduces variance substantially.
 
@@ -169,16 +189,16 @@ def batch_expected_imp_rewards(
         vulnerability: "none" | "ns" | "ew" | "both"
         k:             number of E-W re-deals per episode
         rng:           numpy Generator for reproducibility (created if None)
+        reward_mode:   "expected_score" — IMP(achieved); rewards maximising E[score|NS]
+                       "par_relative"  — IMP(achieved − par); rewards beating double-dummy par
 
     Returns:
         (expected_imps, expected_pars)
-        expected_imps[i]: mean IMP reward over k E-W samples for episode i
+        expected_imps[i]: mean reward over k E-W samples for episode i
         expected_pars[i]: mean N-S par score over k E-W samples for episode i
     """
     if rng is None:
         rng = np.random.default_rng()
-
-    n = len(ep_deals)
 
     # Build all N*k re-deals in episode order
     all_redeals = []
@@ -194,17 +214,17 @@ def batch_expected_imp_rewards(
     for i, (ep_deal, auction) in enumerate(zip(ep_deals, auctions)):
         tables = all_tables[i * k: (i + 1) * k]
 
+        cf = auction.final_contract()
+        ns_declared = cf is not None and cf[2] in (0, 2)
+        bid_strain  = cf[1] if cf is not None else None
+
         imp_samples = []
         par_samples = []
         for table in tables:
             par      = ns_par_score(table, vulnerability)
             achieved = achieved_ns_score(table, auction, vulnerability)
-            reward   = imps(achieved - par)
-            if strain_bonus > 0.0:
-                cf = auction.final_contract()
-                if cf is not None and cf[2] in (0, 2):   # NS declared
-                    if cf[1] == best_ns_strain(table):
-                        reward += strain_bonus
+            strain_correct = ns_declared and bid_strain == best_ns_strain(table)
+            reward = _episode_reward(achieved, par, reward_mode, strain_correct, strain_bonus)
             imp_samples.append(reward)
             par_samples.append(par)
 
@@ -220,9 +240,10 @@ def precomputed_imp_rewards(
     vulnerability: str,
     k: int = None,
     strain_bonus: float = 0.0,
+    reward_mode: str = "expected_score",
 ) -> tuple:
     """
-    Compute expected IMP rewards using pre-computed DDS tables from a dataset.
+    Compute expected rewards using pre-computed DDS tables from a dataset.
     No live DDS calls — pure numpy lookups.
 
     Args:
@@ -230,6 +251,7 @@ def precomputed_imp_rewards(
         auctions:         list of N completed AuctionState objects
         vulnerability:    "none" | "ns" | "ew" | "both"
         k:                number of EW samples to use (≤ K stored; None = use all)
+        reward_mode:      "expected_score" or "par_relative" (see batch_expected_imp_rewards)
 
     Returns:
         (expected_imps, expected_pars)  — same contract as batch_expected_imp_rewards
@@ -242,18 +264,18 @@ def precomputed_imp_rewards(
     expected_pars = []
 
     for i, auction in enumerate(auctions):
+        cf = auction.final_contract()
+        ns_declared = cf is not None and cf[2] in (0, 2)
+        bid_strain  = cf[1] if cf is not None else None
+
         imp_samples = []
         par_samples = []
         for k_idx in range(k):
             table    = dds_tables_batch[i, k_idx]   # (5, 4) numpy array
             par      = ns_par_score(table, vulnerability)
             achieved = achieved_ns_score(table, auction, vulnerability)
-            reward   = imps(achieved - par)
-            if strain_bonus > 0.0:
-                cf = auction.final_contract()
-                if cf is not None and cf[2] in (0, 2):   # NS declared
-                    if cf[1] == best_ns_strain(table):
-                        reward += strain_bonus
+            strain_correct = ns_declared and bid_strain == best_ns_strain(table)
+            reward = _episode_reward(achieved, par, reward_mode, strain_correct, strain_bonus)
             imp_samples.append(reward)
             par_samples.append(par)
 

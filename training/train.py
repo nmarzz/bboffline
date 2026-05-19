@@ -51,6 +51,7 @@ def collect_batch_vectorized(
     device: str,
     ew_samples: int,
     strain_bonus: float = 0.0,
+    reward_mode: str = "expected_score",
 ) -> tuple:
     """
     Run N auctions in lockstep: at every step each active auction takes one
@@ -144,7 +145,7 @@ def collect_batch_vectorized(
     # Compute rewards from pre-computed tables (pure numpy, no DDS)
     exp_imps, exp_pars = precomputed_imp_rewards(
         dds_tables, auctions, vulnerability, k=ew_samples,
-        strain_bonus=strain_bonus,
+        strain_bonus=strain_bonus, reward_mode=reward_mode,
     )
     for trans, imp in zip(all_trans, exp_imps):
         if trans:
@@ -226,6 +227,7 @@ def collect_batch_sequential(
     ew_samples: int,
     rng,
     strain_bonus: float = 0.0,
+    reward_mode: str = "expected_score",
 ) -> tuple:
     """Sequential rollout using live DDS calls. Slower but needs no dataset."""
     deals     = []
@@ -242,7 +244,7 @@ def collect_batch_sequential(
     exp_imps, exp_pars = batch_expected_imp_rewards(
         [d.endplay_deal for d in deals],
         auctions, vulnerability, k=ew_samples, rng=rng,
-        strain_bonus=strain_bonus,
+        strain_bonus=strain_bonus, reward_mode=reward_mode,
     )
 
     for trans, imp in zip(all_trans, exp_imps):
@@ -299,6 +301,7 @@ def train(args):
     print(f"BiddingNet  hidden={args.hidden}  embed={args.embed_dim}  "
           f"mlp_layers={args.mlp_layers}  lstm_layers={args.lstm_layers}")
     print(f"Parameters: {count_params(net):,}")
+    print(f"Reward mode: {args.reward_mode}")
     print(f"EW samples per episode: {args.ew_samples}")
     print(f"Entropy coef: {args.entropy_coef} → {args.entropy_final} (linear anneal)")
     if dataset:
@@ -326,13 +329,13 @@ def train(args):
             flat_trans, exp_imps, exp_pars = collect_batch_vectorized(
                 net, ns_hands, dds_tbls,
                 dataset.vulnerability, device, args.ew_samples,
-                strain_bonus=args.strain_bonus,
+                strain_bonus=args.strain_bonus, reward_mode=args.reward_mode,
             )
         else:
             flat_trans, exp_imps, exp_pars = collect_batch_sequential(
                 agent, args.batch_episodes, args.vulnerability,
                 device, args.ew_samples, rng,
-                strain_bonus=args.strain_bonus,
+                strain_bonus=args.strain_bonus, reward_mode=args.reward_mode,
             )
 
         # ---- PPO update ----
@@ -397,7 +400,10 @@ if __name__ == "__main__":
     parser.add_argument("--ew-samples",     type=int,   default=10,
                         help="EW re-deals per episode for counterfactual reward")
     parser.add_argument("--lr",             type=float, default=3e-4)
-    parser.add_argument("--strain-bonus",   type=float, default=2.0,
+    parser.add_argument("--reward-mode",    default="expected_score",
+                        choices=["expected_score", "par_relative"],
+                        help="expected_score: IMP(achieved); par_relative: IMP(achieved−par)")
+    parser.add_argument("--strain-bonus",   type=float, default=0.5,
                         help="IMP bonus added when NS bids the optimal strain")
     parser.add_argument("--entropy-coef",   type=float, default=0.05,
                         help="Entropy bonus coefficient at the start of training")
