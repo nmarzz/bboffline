@@ -62,7 +62,7 @@ class PPOUpdater:
         net: BiddingNet,
         lr: float = 3e-4,
         clip_eps: float = 0.2,
-        entropy_coef: float = 0.01,
+        entropy_coef: float = 0.05,
         value_coef: float = 0.5,
         n_epochs: int = 4,
         device: str = "cpu",
@@ -80,6 +80,9 @@ class PPOUpdater:
         for pg in self.optimizer.param_groups:
             pg["lr"] = lr
         self._lr = lr
+
+    def set_entropy_coef(self, coef: float):
+        self.entropy_coef = coef
 
     def update(self, buffer: RolloutBuffer) -> dict:
         """Run PPO update on collected transitions. Returns loss stats."""

@@ -50,6 +50,7 @@ def collect_batch_vectorized(
     vulnerability: str,
     device: str,
     ew_samples: int,
+    strain_bonus: float = 0.0,
 ) -> tuple:
     """
     Run N auctions in lockstep: at every step each active auction takes one
@@ -142,7 +143,8 @@ def collect_batch_vectorized(
 
     # Compute rewards from pre-computed tables (pure numpy, no DDS)
     exp_imps, exp_pars = precomputed_imp_rewards(
-        dds_tables, auctions, vulnerability, k=ew_samples
+        dds_tables, auctions, vulnerability, k=ew_samples,
+        strain_bonus=strain_bonus,
     )
     for trans, imp in zip(all_trans, exp_imps):
         if trans:
@@ -223,6 +225,7 @@ def collect_batch_sequential(
     device: str,
     ew_samples: int,
     rng,
+    strain_bonus: float = 0.0,
 ) -> tuple:
     """Sequential rollout using live DDS calls. Slower but needs no dataset."""
     deals     = []
@@ -239,6 +242,7 @@ def collect_batch_sequential(
     exp_imps, exp_pars = batch_expected_imp_rewards(
         [d.endplay_deal for d in deals],
         auctions, vulnerability, k=ew_samples, rng=rng,
+        strain_bonus=strain_bonus,
     )
 
     for trans, imp in zip(all_trans, exp_imps):
@@ -289,13 +293,14 @@ def train(args):
     ).to(device)
 
     agent   = NNAgent(net, device=device)
-    updater = PPOUpdater(net, lr=args.lr, device=device)
+    updater = PPOUpdater(net, lr=args.lr, entropy_coef=args.entropy_coef, device=device)
     buffer  = RolloutBuffer()
 
     print(f"BiddingNet  hidden={args.hidden}  embed={args.embed_dim}  "
           f"mlp_layers={args.mlp_layers}  lstm_layers={args.lstm_layers}")
     print(f"Parameters: {count_params(net):,}")
     print(f"EW samples per episode: {args.ew_samples}")
+    print(f"Entropy coef: {args.entropy_coef} → {args.entropy_final} (linear anneal)")
     if dataset:
         print("Using vectorized dataset rollouts (GPU-efficient)")
     else:
@@ -321,16 +326,21 @@ def train(args):
             flat_trans, exp_imps, exp_pars = collect_batch_vectorized(
                 net, ns_hands, dds_tbls,
                 dataset.vulnerability, device, args.ew_samples,
+                strain_bonus=args.strain_bonus,
             )
         else:
             flat_trans, exp_imps, exp_pars = collect_batch_sequential(
                 agent, args.batch_episodes, args.vulnerability,
                 device, args.ew_samples, rng,
+                strain_bonus=args.strain_bonus,
             )
 
         # ---- PPO update ----
         frac = episode / args.episodes
         updater.set_lr(args.lr * (1.0 - frac * 2 / 3))
+        updater.set_entropy_coef(
+            args.entropy_coef + (args.entropy_final - args.entropy_coef) * frac
+        )
 
         for t in flat_trans:
             buffer.push(t)
@@ -387,6 +397,12 @@ if __name__ == "__main__":
     parser.add_argument("--ew-samples",     type=int,   default=10,
                         help="EW re-deals per episode for counterfactual reward")
     parser.add_argument("--lr",             type=float, default=3e-4)
+    parser.add_argument("--strain-bonus",   type=float, default=2.0,
+                        help="IMP bonus added when NS bids the optimal strain")
+    parser.add_argument("--entropy-coef",   type=float, default=0.05,
+                        help="Entropy bonus coefficient at the start of training")
+    parser.add_argument("--entropy-final",  type=float, default=0.01,
+                        help="Entropy bonus coefficient at the end of training")
     parser.add_argument("--vulnerability",  default="none",
                         choices=["none", "ns", "ew", "both"])
     parser.add_argument("--device",         default="cpu")

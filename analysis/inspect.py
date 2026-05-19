@@ -18,6 +18,7 @@ from environment.auction import AuctionState, NUM_BIDS, MAX_AUCTION_LEN, bid_nam
 from environment.scoring import batch_expected_imp_rewards, ns_par_score, achieved_ns_score, _calc_all_tables_chunked
 import endplay.dds as dds
 from agents.random_agent import RandomAgent
+from agents.pass_agent import PassAgent
 from agents.nn_agent import BiddingNet, NNAgent
 
 _DENOM_NAMES = ["C", "D", "H", "S", "NT"]
@@ -127,7 +128,9 @@ def run_stats(agent, n=1000, vulnerability="none", ew_samples=20, batch_size=100
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--checkpoint", default=None)
-    parser.add_argument("--random", action="store_true")
+    parser.add_argument("--random",     action="store_true", help="Use random agent")
+    parser.add_argument("--pass",       action="store_true", help="Use always-pass agent",
+                        dest="always_pass")
     parser.add_argument("--n", type=int, default=20)
     parser.add_argument("--stats", action="store_true",
                         help="Print aggregate stats instead of sample auctions")
@@ -135,7 +138,10 @@ def main():
                         choices=["none", "ns", "ew", "both"])
     args = parser.parse_args()
 
-    if args.random or args.checkpoint is None:
+    if args.always_pass:
+        agent = PassAgent()
+        label = "Always-pass agent"
+    elif args.random or args.checkpoint is None:
         agent = RandomAgent()
         label = "Random agent"
     else:

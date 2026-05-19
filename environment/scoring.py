@@ -72,6 +72,23 @@ def table_to_array(ep_table) -> np.ndarray:
     return arr
 
 
+def best_ns_strain(table) -> int:
+    """
+    Return the denom_idx (0=C,1=D,2=H,3=S,4=NT) where NS can take the most
+    double-dummy tricks (taking the better of North and South as declarer).
+    Accepts either an endplay DDTable or a (5, 4) numpy array.
+    """
+    best_denom  = 0
+    best_tricks = -1
+    for d_idx in range(5):
+        tricks = max(_tricks(table, d_idx, 0),   # North
+                     _tricks(table, d_idx, 2))   # South
+        if tricks > best_tricks:
+            best_tricks = tricks
+            best_denom  = d_idx
+    return best_denom
+
+
 def ns_par_score(table, vulnerability: str) -> int:
     """
     Best score N-S can achieve in an uncontested auction given double-dummy play.
@@ -133,6 +150,7 @@ def batch_expected_imp_rewards(
     vulnerability: str,
     k: int,
     rng=None,
+    strain_bonus: float = 0.0,
 ) -> tuple:
     """
     Compute counterfactual expected IMP rewards for a batch of episodes.
@@ -179,9 +197,15 @@ def batch_expected_imp_rewards(
         imp_samples = []
         par_samples = []
         for table in tables:
-            par = ns_par_score(table, vulnerability)
+            par      = ns_par_score(table, vulnerability)
             achieved = achieved_ns_score(table, auction, vulnerability)
-            imp_samples.append(imps(achieved - par))
+            reward   = imps(achieved - par)
+            if strain_bonus > 0.0:
+                cf = auction.final_contract()
+                if cf is not None and cf[2] in (0, 2):   # NS declared
+                    if cf[1] == best_ns_strain(table):
+                        reward += strain_bonus
+            imp_samples.append(reward)
             par_samples.append(par)
 
         expected_imps.append(float(np.mean(imp_samples)))
@@ -195,6 +219,7 @@ def precomputed_imp_rewards(
     auctions: list,
     vulnerability: str,
     k: int = None,
+    strain_bonus: float = 0.0,
 ) -> tuple:
     """
     Compute expected IMP rewards using pre-computed DDS tables from a dataset.
@@ -220,10 +245,16 @@ def precomputed_imp_rewards(
         imp_samples = []
         par_samples = []
         for k_idx in range(k):
-            table = dds_tables_batch[i, k_idx]   # (5, 4) numpy array
+            table    = dds_tables_batch[i, k_idx]   # (5, 4) numpy array
             par      = ns_par_score(table, vulnerability)
             achieved = achieved_ns_score(table, auction, vulnerability)
-            imp_samples.append(imps(achieved - par))
+            reward   = imps(achieved - par)
+            if strain_bonus > 0.0:
+                cf = auction.final_contract()
+                if cf is not None and cf[2] in (0, 2):   # NS declared
+                    if cf[1] == best_ns_strain(table):
+                        reward += strain_bonus
+            imp_samples.append(reward)
             par_samples.append(par)
 
         expected_imps.append(float(np.mean(imp_samples)))

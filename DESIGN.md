@@ -47,8 +47,6 @@ $$r = \frac{1}{K} \sum_{k=1}^{K} \mathrm{IMP}\!\left(\mathrm{score}(A, \text{EW}
 
 where $A$ is the auction sequence, $\text{EW}_k$ is the $k$-th random EW completion holding NS fixed, and par is also computed per EW completion so the baseline is consistent with each specific layout. The NS hands are fixed (they are what drove the bidding), but the EW cards are re-shuffled $K$ times and DDS is queried for each combination. This is an unbiased estimator of the expected IMP reward conditioned on the NS hands.
 
-In practice $K = 10$–$20$ gives a good variance-reduction/cost trade-off.
-
 ---
 
 ## 4  Pre-Computed Dataset

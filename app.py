@@ -67,8 +67,17 @@ def _load_agent(model_name: str):
         path = CHECKPOINTS_DIR / f"{model_name}.pt"
         if not path.exists():
             raise HTTPException(404, f"Checkpoint '{model_name}' not found")
-        net = BiddingNet()
-        net.load_state_dict(torch.load(str(path), map_location="cpu", weights_only=True))
+        state_dict = torch.load(str(path), map_location="cpu", weights_only=True)
+        # Infer every architectural hyper-parameter from the checkpoint so any
+        # model size (hidden width, MLP depth, LSTM depth) loads correctly.
+        hidden      = state_dict["hand_enc.0.weight"].shape[0]
+        embed_dim   = state_dict["bid_emb.weight"].shape[1]
+        mlp_layers  = sum(1 for k in state_dict
+                          if k.startswith("hand_enc.") and k.endswith(".weight")) - 1
+        lstm_layers = sum(1 for k in state_dict if k.startswith("lstm.weight_ih_l"))
+        net = BiddingNet(hidden=hidden, embed_dim=embed_dim,
+                         mlp_layers=mlp_layers, lstm_layers=lstm_layers)
+        net.load_state_dict(state_dict)
         net.eval()
         agent = NNAgent(net)
     _model_cache[model_name] = agent
@@ -122,35 +131,41 @@ def _rebuild_auction(bids: list) -> AuctionState:
     return a
 
 
-def _suggest_bid(agent, hand_vec: np.ndarray, auction: AuctionState) -> int:
-    """Return agent's bid suggestion for the current player.
+def _suggest_bid(agent, hand_vec: np.ndarray, auction: AuctionState, top_k: int = 3):
+    """Return agent's greedy bid and the top-k distribution over valid bids.
 
-    Uses stochastic sampling (matching training), so the suggestion reflects
-    the full policy distribution rather than always collapsing to the argmax.
+    Returns (best_bid_idx, [(bid_idx, bid_name, probability), ...]).
+    For RandomAgent the distribution is uniform over valid bids.
     """
     current = auction.current_player()
     valid = auction.valid_bids()
 
     if isinstance(agent, RandomAgent):
-        import random
-        return random.choice(valid)
+        p = 1.0 / len(valid)
+        dist = [(b, bid_name(b), round(p, 4)) for b in valid[:top_k]]
+        return valid[0], dist
 
-    # NNAgent — sample from the masked policy distribution
     seq = np.full(MAX_AUCTION_LEN, -1, dtype=np.int64)
     seq[: len(auction.bids)] = auction.bids
 
     hand_t = torch.tensor(hand_vec, dtype=torch.float32).unsqueeze(0)
-    seq_t = torch.tensor(seq, dtype=torch.int64).unsqueeze(0)
-    dir_t = torch.tensor([current], dtype=torch.int64)
-    mask = torch.zeros(1, NUM_BIDS, dtype=torch.bool)
+    seq_t  = torch.tensor(seq,      dtype=torch.int64).unsqueeze(0)
+    dir_t  = torch.tensor([current], dtype=torch.int64)
+    mask   = torch.zeros(1, NUM_BIDS, dtype=torch.bool)
     for b in valid:
         mask[0, b] = True
 
     with torch.no_grad():
         log_probs, _ = agent.net(hand_t, seq_t, dir_t, mask)
 
-    from torch.distributions import Categorical
-    return int(Categorical(logits=log_probs[0]).sample().item())
+    probs     = log_probs[0].exp()
+    top       = probs.topk(min(top_k, len(valid)))
+    best_idx  = int(top.indices[0].item())
+    dist      = [
+        (int(idx.item()), bid_name(int(idx.item())), round(float(p.item()), 4))
+        for idx, p in zip(top.indices, top.values)
+    ]
+    return best_idx, dist
 
 
 # ---------------------------------------------------------------------------
@@ -242,13 +257,14 @@ async def suggest_next(req: SuggestRequest):
             "imp": imp,
         }
 
-    current = auction.current_player()
+    current  = auction.current_player()
     hand_vec = deal.hands[current]
-    bid_idx = _suggest_bid(agent, hand_vec, auction)
+    bid_idx, dist = _suggest_bid(agent, hand_vec, auction)
 
     return {
-        "is_complete": False,
+        "is_complete":    False,
         "current_player": _DIR_NAMES[current],
-        "bid_idx": bid_idx,
-        "bid_name": bid_name(bid_idx),
+        "bid_idx":        bid_idx,
+        "bid_name":       bid_name(bid_idx),
+        "distribution":   [{"bid_idx": b, "bid_name": n, "prob": p} for b, n, p in dist],
     }

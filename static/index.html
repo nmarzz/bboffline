@@ -231,6 +231,51 @@ select {
 .sug-bid    { font-size: 1.3rem; font-weight: bold; color: #fff; min-width: 55px; }
 .sug-btns   { display: flex; gap: 8px; margin-left: auto; }
 
+/* Probability distribution */
+.dist-bars {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 8px 12px;
+  background: #071f0c;
+  border-radius: 0 0 6px 6px;
+  margin-top: -6px;
+  padding-top: 12px;
+}
+.dist-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.85rem;
+}
+.dist-bid-name {
+  min-width: 40px;
+  font-weight: bold;
+  color: #eee;
+  text-align: right;
+}
+.dist-bar-bg {
+  flex: 1;
+  height: 10px;
+  background: #1e5c26;
+  border-radius: 5px;
+  overflow: hidden;
+}
+.dist-bar-fill {
+  height: 100%;
+  background: #ffd700;
+  border-radius: 5px;
+  transition: width 0.2s ease;
+}
+.dist-bar-fill.top { background: #ffd700; }
+.dist-bar-fill.other { background: #4a9a55; }
+.dist-prob {
+  min-width: 42px;
+  text-align: right;
+  color: #7aaa80;
+  font-size: 0.8rem;
+}
+
 /* Result */
 .result-box {
   background: #071f0c;
@@ -457,6 +502,24 @@ async function fetchSuggestion() {
 
 function showSuggestion(data) {
   const area = document.getElementById('suggestion-area');
+
+  let distHtml = '';
+  if (data.distribution && data.distribution.length) {
+    const rows = data.distribution.map((d, i) => {
+      const pct  = (d.prob * 100).toFixed(1);
+      const cls  = i === 0 ? 'top' : 'other';
+      return `
+        <div class="dist-row">
+          <span class="dist-bid-name">${fmtBidName(d.bid_name)}</span>
+          <div class="dist-bar-bg">
+            <div class="dist-bar-fill ${cls}" style="width:${pct}%"></div>
+          </div>
+          <span class="dist-prob">${pct}%</span>
+        </div>`;
+    }).join('');
+    distHtml = `<div class="dist-bars">${rows}</div>`;
+  }
+
   area.innerHTML = `
     <div class="suggestion-bar">
       <span class="sug-player">${data.current_player}</span>
@@ -467,6 +530,7 @@ function showSuggestion(data) {
         <button class="btn btn-secondary" onclick="runToEnd()">Run to end</button>
       </div>
     </div>
+    ${distHtml}
   `;
 }
 
