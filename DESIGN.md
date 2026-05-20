@@ -53,25 +53,23 @@ Three reward modes are supported via `--reward-mode`:
 
 | Mode | Formula | Default |
 |------|---------|---------|
-| `optimal_contract_regret` | $\mathrm{IMP}(\mathrm{score}(A, \text{EW}_k) - \mathrm{score}(C^*, \text{EW}_k))$ | ✓ |
-| `expected_score` | $\mathrm{IMP}(\mathrm{score}(A, \text{EW}_k))$ | |
+| `expected_score` | $\mathrm{IMP}(\mathrm{score}(A, \text{EW}_k))$ | ✓ |
+| `optimal_contract_regret` | $\mathrm{IMP}(\mathrm{score}(A, \text{EW}_k) - \mathrm{score}(C^*, \text{EW}_k))$ | |
 | `par_relative` | $\mathrm{IMP}(\mathrm{score}(A, \text{EW}_k) - \mathrm{par}(\text{NS}, \text{EW}_k))$ | |
 
-**`optimal_contract_regret`** is the primary mode. For each NS holding, $C^*$ is determined by scanning all 70 candidate NS contracts and selecting the one with the highest expected score across the $K$ EW samples:
+**`expected_score`** is the training default. The reward is simply the IMP value of the score NS achieves — a pass-out maps to 0, any making contract to a positive value. This has a favourable exploration landscape: the reward increases monotonically from 0 (pass) through low-level part-scores up to slam, so the agent receives a gradient toward better contracts at every step of improvement. The optimal policy under this objective closely tracks $C^*$ because IMP is a monotone transform of score.
+
+**`optimal_contract_regret`** is the theoretically cleanest formulation. For each NS holding, $C^*$ is found by scanning all 70 candidate NS contracts and selecting the one with the highest expected score:
 
 $$C^* = \underset{C}{\arg\max}\; \frac{1}{K}\sum_{k=1}^{K} \mathrm{score}(C, \text{EW}_k)$$
 
-The reward is then the IMP value of the point swing between what NS bid and what $C^*$ would have scored on the same EW layout:
+The reward is the IMP swing between the bid contract and $C^*$ on each EW layout:
 
 $$r = \frac{1}{K} \sum_{k=1}^{K} \mathrm{IMP}\!\left(\mathrm{score}(A, \text{EW}_k) - \mathrm{score}(C^*, \text{EW}_k)\right)$$
 
-This is a **regret** signal: it is exactly 0 when NS bids $C^*$ and negative otherwise, always lying in $[-24, 0]$. The baseline $C^*$ is stable — it is fixed given the NS hands and the EW distribution — which makes it a cleaner training signal than par (which is computed on the realised EW layout and fluctuates with each EW draw).
+This is exactly 0 at $C^*$ and lies in $[-24, 0]$ otherwise. However, it is not suitable for training from scratch: a passing agent receives reward $\approx -9$ (missing game), while a randomly bidding agent receives $\approx -15$ or worse (going down far from $C^*$). PPO normalises advantages within each batch, so passouts have higher advantage than random bids — the agent correctly learns that passing beats random play, but then gets stuck. It never explores enough to discover the narrow region near $C^*$ where reward approaches 0. This mode is best reserved for fine-tuning an agent that already bids reasonably. $C^*$ is computed via pure numpy indexing into a precomputed scoring lookup table (built once per vulnerability from 980 endplay calls, then cached).
 
-$C^*$ is computed via pure numpy indexing into a precomputed scoring lookup table (built once per vulnerability from 980 endplay calls, then cached), so it adds negligible overhead.
-
-**`expected_score`** rewards the absolute IMP value of the achieved score. A pass-out maps to 0 IMPs naturally; the range is $[-24, +24]$.
-
-**`par_relative`** is retained for comparison and ablation. It measures deviation from the double-dummy par on the realised EW layout.
+**`par_relative`** is retained for ablation. It measures deviation from the double-dummy par on the realised EW layout.
 
 ### 3.3  Variance reduction via EW re-sampling
 
