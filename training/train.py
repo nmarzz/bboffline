@@ -288,10 +288,11 @@ def train(args):
 
     # ---- Network ----
     net = BiddingNet(
-        hidden      = args.hidden,
-        embed_dim   = args.embed_dim,
-        mlp_layers  = args.mlp_layers,
-        lstm_layers = args.lstm_layers,
+        hidden       = args.hidden,
+        embed_dim    = args.embed_dim,
+        mlp_layers   = args.mlp_layers,
+        lstm_layers  = args.lstm_layers,
+        hand_encoder = args.hand_encoder,
     ).to(device)
 
     agent   = NNAgent(net, device=device)
@@ -299,7 +300,8 @@ def train(args):
     buffer  = RolloutBuffer()
 
     print(f"BiddingNet  hidden={args.hidden}  embed={args.embed_dim}  "
-          f"mlp_layers={args.mlp_layers}  lstm_layers={args.lstm_layers}")
+          f"mlp_layers={args.mlp_layers}  lstm_layers={args.lstm_layers}  "
+          f"hand_encoder={args.hand_encoder}")
     print(f"Parameters: {count_params(net):,}")
     print(f"Reward mode: {args.reward_mode}")
     print(f"EW samples per episode: {args.ew_samples}")
@@ -419,14 +421,17 @@ if __name__ == "__main__":
                         help="Path to pre-computed dataset dir (skips live DDS)")
 
     # Network architecture
-    parser.add_argument("--hidden",      type=int, default=128,
+    parser.add_argument("--hidden",       type=int, default=128,
                         help="Hidden width for MLP layers and LSTM")
-    parser.add_argument("--embed-dim",   type=int, default=32,
-                        help="Bid-token embedding dimension")
-    parser.add_argument("--mlp-layers",  type=int, default=1,
+    parser.add_argument("--embed-dim",    type=int, default=32,
+                        help="Bid-token embedding dimension; also per-suit embedding size")
+    parser.add_argument("--mlp-layers",   type=int, default=1,
                         help="Hidden layers in hand encoder and output heads")
-    parser.add_argument("--lstm-layers", type=int, default=1,
+    parser.add_argument("--lstm-layers",  type=int, default=1,
                         help="Stacked LSTM layers for auction encoding")
+    parser.add_argument("--hand-encoder", default="suit",
+                        choices=["suit", "mlp"],
+                        help="suit: shared per-suit encoder (default); mlp: flat 52-bit MLP")
 
     args = parser.parse_args()
     train(args)

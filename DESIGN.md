@@ -97,21 +97,26 @@ Both files are loaded as numpy memory-maps so only accessed pages enter RAM. At 
 North and South share a **single set of weights** (`BiddingNet`). The network receives the agent's own hand and the full auction history, and outputs a policy (action distribution) and a value estimate. The seat (N or S) is communicated to the shared network via a **direction token** prepended to the auction sequence, so the model can condition its output on which position it is bidding from.
 
 ```
-hand  (52,)            →  Hand encoder MLP  →  hand_emb  (H,)
-                                                              ↘
+hand  (52,)  →  reshape (4, 13)  →  shared Linear(13→E) per suit
+             →  suit_embs (4, E)  →  flatten  →  agg MLP  →  hand_emb (H,)
+                                                                          ↘
 auction  (T,)  →  Embedding  →  (T, E)  →  LSTM  →  lstm_emb  (H,)
-                                                              ↙
-                                              concat  (2H,)
-                                                  ↓
-                                       Policy head MLP  →  logits  (38,)
-                                       Value head MLP   →  value   (1,)
+                                                                          ↙
+                                                          concat  (2H,)
+                                                              ↓
+                                                   Policy head MLP  →  logits  (38,)
+                                                   Value head MLP   →  value   (1,)
 ```
 
-**Hand encoder**: A multi-layer perceptron with ReLU activations mapping the 52-dimensional binary hand vector to a $H$-dimensional embedding.
+**Hand encoder** (`--hand-encoder suit`, default): The 52-bit hand vector is reshaped to $(4 \times 13)$ — one row per suit. A single `Linear(13 \to E)` with shared weights is applied to each suit's rank bitmap, producing four suit embeddings of dimension $E$. These are concatenated to $(4E,)$ and passed through an aggregation MLP to produce the $H$-dimensional hand embedding.
+
+Shared weights across suits give the right inductive bias: the same features (length, voids, top-honor presence) are meaningful in every suit. Concatenating rather than mean-pooling preserves suit identity, so the model can learn that major suits and minor suits score differently.
+
+The alternative flat encoder (`--hand-encoder mlp`) applies a single MLP directly to the 52-bit vector, with no suit structure imposed. This is kept for ablation.
 
 **Auction encoder**: Each bid token (including the leading direction token) is looked up in a learned embedding table of dimension $E$. The sequence is then processed by a stacked LSTM. Sequences are packed before being fed to the LSTM so no computation is wasted on padding tokens and gradients do not flow through them. The final hidden state of the top LSTM layer is used as the auction embedding.
 
-**Direction token**: The agent's seat (0–3) is encoded as a special vocabulary token appended at offset $\text{NUM\_BIDS}$, so it sits outside the bid range and is prepended to the auction sequence before LSTM encoding. This lets a single shared network behave differently depending on whether it is North or South.
+**Direction token**: The agent's seat (0–3) is encoded as a special vocabulary token at offset $\text{NUM\_BIDS}$, prepended to the auction sequence before LSTM encoding. This lets the shared network behave differently depending on whether it is North or South.
 
 **Output heads**: The combined $(2H)$-dimensional vector feeds two independent MLPs — a policy head producing unnormalized logits over 38 actions, and a value head producing a scalar estimate of the expected return. Illegal actions are masked to $-10^9$ before the log-softmax, which prevents probability mass on impossible bids while avoiding the NaN gradients that arise from exact $-\infty$ masking in some autograd implementations.
 
@@ -119,11 +124,12 @@ auction  (T,)  →  Embedding  →  (T, E)  →  LSTM  →  lstm_emb  (H,)
 
 | Parameter | Default |
 |-----------|---------|
+| Hand encoder | suit |
 | Hidden width $H$ | 128 |
-| Embedding dim $E$ | 32 |
+| Embedding dim $E$ | 32 (bid tokens and per-suit) |
 | MLP hidden layers | 1 |
 | LSTM layers | 1 |
-| ~Parameters | 124 k |
+| ~Parameters | 189 k (suit) / 178 k (mlp) |
 
 ---
 
@@ -161,7 +167,7 @@ To fully utilize a GPU with a large network, rollout collection is vectorized ac
 
 ### 6.4  Learning rate schedule
 
-The learning rate decays linearly from $3 \times 10^{-4}$ to $1 \times 10^{-4}$ over the first two-thirds of training, then holds constant. Updates use Adam with gradient clipping at norm 0.5.
+The learning rate decays linearly from $3 \times 10^{-4}$ to $1 \times 10^{-4}$ over the full training run (`lr × (1 − frac × 2/3)`). The entropy coefficient decays independently from 0.05 to 0.01 over the same span. Updates use Adam with gradient clipping at norm 0.5.
 
 ---
 
