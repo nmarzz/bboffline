@@ -16,8 +16,8 @@ sys.path.insert(0, str(Path(__file__).parent))
 from agents.nn_agent import BiddingNet, NNAgent
 from agents.random_agent import RandomAgent
 from environment.auction import AuctionState, MAX_AUCTION_LEN, NUM_BIDS, bid_name
-from environment.deal import BridgeDeal, random_deal
-from environment.scoring import achieved_ns_score, imps
+from environment.deal import BridgeDeal, random_deal, resample_ew
+from environment.scoring import achieved_ns_score, imps, _calc_all_tables_chunked
 
 import endplay.dds as dds
 from endplay.types import Contract, Denom, Penalty, Player, Vul
@@ -67,16 +67,27 @@ def _load_agent(model_name: str):
         path = CHECKPOINTS_DIR / f"{model_name}.pt"
         if not path.exists():
             raise HTTPException(404, f"Checkpoint '{model_name}' not found")
-        state_dict = torch.load(str(path), map_location="cpu", weights_only=True)
-        # Infer every architectural hyper-parameter from the checkpoint so any
-        # model size (hidden width, MLP depth, LSTM depth) loads correctly.
-        hidden      = state_dict["hand_enc.0.weight"].shape[0]
-        embed_dim   = state_dict["bid_emb.weight"].shape[1]
-        mlp_layers  = sum(1 for k in state_dict
-                          if k.startswith("hand_enc.") and k.endswith(".weight")) - 1
+        state_dict  = torch.load(str(path), map_location="cpu", weights_only=True)
         lstm_layers = sum(1 for k in state_dict if k.startswith("lstm.weight_ih_l"))
+        embed_dim   = state_dict["bid_emb.weight"].shape[1]
+
+        if "hand_enc.suit_linear.weight" in state_dict:
+            # SuitAwareHandEncoder: suit_linear maps (13 → embed_dim),
+            # agg MLP maps (4*embed_dim → hidden).
+            hand_encoder = "suit"
+            hidden     = state_dict["hand_enc.agg.0.weight"].shape[0]
+            mlp_layers = sum(1 for k in state_dict
+                             if k.startswith("hand_enc.agg.") and k.endswith(".weight")) - 1
+        else:
+            # Flat MLP encoder: first Linear maps (52 → hidden).
+            hand_encoder = "mlp"
+            hidden     = state_dict["hand_enc.0.weight"].shape[0]
+            mlp_layers = sum(1 for k in state_dict
+                             if k.startswith("hand_enc.") and k.endswith(".weight")) - 1
+
         net = BiddingNet(hidden=hidden, embed_dim=embed_dim,
-                         mlp_layers=mlp_layers, lstm_layers=lstm_layers)
+                         mlp_layers=mlp_layers, lstm_layers=lstm_layers,
+                         hand_encoder=hand_encoder)
         net.load_state_dict(state_dict)
         net.eval()
         agent = NNAgent(net)
@@ -268,3 +279,70 @@ async def suggest_next(req: SuggestRequest):
         "bid_name":       bid_name(bid_idx),
         "distribution":   [{"bid_idx": b, "bid_name": n, "prob": p} for b, n, p in dist],
     }
+
+
+class ParAnalysisRequest(BaseModel):
+    deal_id: str
+    k: int = 20   # number of EW re-deals to sample
+
+
+@app.post("/par_analysis")
+async def par_analysis(req: ParAnalysisRequest):
+    """Rank all NS contracts by expected score over k sampled EW completions.
+
+    For each (level, denom, declarer∈{N,S}) we average the score across k
+    re-dealt EW hands using double-dummy play, giving a robust estimate of
+    how good that contract is given only the NS cards.  Returns the top 3
+    contracts by expected score, plus their score on the actual deal.
+    """
+    cached = _deal_cache.get(req.deal_id)
+    if cached is None:
+        raise HTTPException(404, "Deal not found")
+
+    deal: BridgeDeal = cached["deal"]
+    raw_table        = cached["raw_table"]
+    vulnerability    = cached["vulnerability"]
+    vul              = _VUL[vulnerability]
+    rng              = np.random.default_rng()
+
+    # Sample k EW completions and solve them all in one batched DDS call.
+    ew_deals = resample_ew(deal.endplay_deal, req.k, rng)
+    sampled_tables = _calc_all_tables_chunked(ew_deals)
+
+    # Accumulate scores for every (denom, declarer_ns, level) triple.
+    # Key: (d_idx, dir_idx, level) → list of per-sample scores.
+    tally: dict = {}
+    for table in sampled_tables:
+        for d_idx, d in enumerate(_ENDPLAY_DENOMS):
+            for dir_idx in (0, 2):               # North=0, South=2
+                declarer = _ENDPLAY_PLAYERS[dir_idx]
+                tricks   = table[d, declarer]
+                for level in range(1, 8):
+                    result = tricks - (level + 6)
+                    c      = Contract(level=level, denom=d, declarer=declarer,
+                                      penalty=Penalty.passed, result=result)
+                    score  = c.score(vul)
+                    key    = (d_idx, dir_idx, level)
+                    if key not in tally:
+                        tally[key] = []
+                    tally[key].append(score)
+
+    # Compute expected score and score on the actual deal for every contract.
+    contracts = []
+    for (d_idx, dir_idx, level), scores in tally.items():
+        d        = _ENDPLAY_DENOMS[d_idx]
+        declarer = _ENDPLAY_PLAYERS[dir_idx]
+        tricks   = raw_table[d, declarer]
+        result   = tricks - (level + 6)
+        c_actual = Contract(level=level, denom=d, declarer=declarer,
+                            penalty=Penalty.passed, result=result)
+        actual_score   = c_actual.score(vul)
+        expected_score = float(np.mean(scores))
+        contracts.append({
+            "contract":       f"{level}{_DENOM_NAMES[d_idx]} by {_DIR_NAMES[dir_idx]}",
+            "expected_score": round(expected_score, 1),
+            "actual_score":   actual_score,
+        })
+
+    contracts.sort(key=lambda x: x["expected_score"], reverse=True)
+    return {"contracts": contracts[:3], "k": req.k}

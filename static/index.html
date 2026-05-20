@@ -299,6 +299,78 @@ select {
 .imp-neg { color: #ff7070; }
 .imp-zero { color: #888; }
 
+/* Par analysis panel */
+.par-analysis-section {
+  max-width: 720px;
+  margin: 0 auto 14px;
+  background: #0d4017;
+  border-radius: 8px;
+  padding: 14px 16px;
+}
+.par-analysis-trigger {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.par-analysis-trigger .hint {
+  font-size: 0.8rem;
+  color: #7aaa80;
+}
+.contract-rank-list {
+  margin-top: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.contract-rank-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 0.9rem;
+}
+.rank-badge {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: #1e5c26;
+  color: #ffd700;
+  font-size: 0.7rem;
+  font-weight: bold;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.rank-badge.gold   { background: #b8860b; color: #fff; }
+.rank-badge.silver { background: #556; color: #ddd; }
+.rank-badge.bronze { background: #7a4a1e; color: #ddd; }
+.contract-name { min-width: 90px; font-weight: bold; color: #eee; }
+.contract-bar-bg {
+  flex: 1;
+  height: 10px;
+  background: #1e5c26;
+  border-radius: 5px;
+  overflow: hidden;
+  position: relative;
+}
+.contract-bar-fill {
+  height: 100%;
+  border-radius: 5px;
+  background: #4a9a55;
+  transition: width 0.3s ease;
+}
+.contract-bar-fill.rank-1 { background: #ffd700; }
+.contract-scores {
+  display: flex;
+  gap: 12px;
+  min-width: 160px;
+  justify-content: flex-end;
+  font-size: 0.8rem;
+}
+.score-expected { color: #ffd700; font-weight: bold; }
+.score-actual   { color: #9cba9e; }
+.score-label    { color: #5a9a65; font-size: 0.7rem; }
+
 /* Welcome message */
 .welcome {
   max-width: 720px;
@@ -359,6 +431,16 @@ select {
 <div class="dd-section" id="dd-section" style="display:none">
   <div class="section-title">Double dummy tricks</div>
   <table class="dd-table" id="dd-table"></table>
+</div>
+
+<!-- Par analysis -->
+<div class="par-analysis-section" id="par-analysis-section" style="display:none">
+  <div class="section-title">Contract analysis</div>
+  <div class="par-analysis-trigger">
+    <button class="btn btn-secondary" id="btn-analyse" onclick="runParAnalysis()">Analyse</button>
+    <span class="hint">Rank top NS contracts by expected score over 20 sampled EW hands</span>
+  </div>
+  <div id="par-analysis-result"></div>
 </div>
 
 <!-- Auction -->
@@ -459,6 +541,10 @@ async function newDeal() {
 
     document.getElementById('welcome').style.display = 'none';
     document.getElementById('compass').style.display = '';
+    document.getElementById('par-analysis-section').style.display = '';
+    document.getElementById('par-analysis-result').innerHTML = '';
+    document.getElementById('btn-analyse').disabled = false;
+    document.getElementById('btn-analyse').textContent = 'Analyse';
     document.getElementById('auction-section').style.display = '';
     document.getElementById('result-area').style.display = 'none';
     document.getElementById('suggestion-area').innerHTML = '';
@@ -567,6 +653,69 @@ async function runToEnd() {
   } finally {
     setBusy(false);
   }
+}
+
+// ---------------------------------------------------------------------------
+// Par analysis
+// ---------------------------------------------------------------------------
+async function runParAnalysis() {
+  if (!st.dealId) return;
+  const btn = document.getElementById('btn-analyse');
+  btn.disabled = true;
+  btn.textContent = 'Analysing…';
+  document.getElementById('par-analysis-result').innerHTML = '';
+
+  try {
+    const res = await fetch('/par_analysis', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({deal_id: st.dealId, k: 20}),
+    });
+    if (!res.ok) throw new Error(await res.text());
+    const data = await res.json();
+    renderParAnalysis(data);
+  } catch (e) {
+    document.getElementById('par-analysis-result').innerHTML =
+      `<div style="color:#ff7070;margin-top:8px">Error: ${e.message}</div>`;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Re-analyse';
+  }
+}
+
+function renderParAnalysis(data) {
+  const badges = ['gold','silver','bronze'];
+  const labels = ['#1','#2','#3'];
+
+  // Find range for bar scaling (use expected scores, floor at 0).
+  const maxScore = Math.max(...data.contracts.map(c => Math.max(c.expected_score, 0)), 1);
+
+  const rows = data.contracts.map((c, i) => {
+    const pct       = Math.max(0, (c.expected_score / maxScore) * 100).toFixed(1);
+    const rankCls   = i === 0 ? 'rank-1' : '';
+    const badgeCls  = badges[i] || '';
+    const expSign   = c.expected_score >= 0 ? '+' : '';
+    const actSign   = c.actual_score   >= 0 ? '+' : '';
+    return `
+      <div class="contract-rank-row">
+        <div class="rank-badge ${badgeCls}">${labels[i]}</div>
+        <div class="contract-name">${fmtContractStr(c.contract)}</div>
+        <div class="contract-bar-bg">
+          <div class="contract-bar-fill ${rankCls}" style="width:${pct}%"></div>
+        </div>
+        <div class="contract-scores">
+          <span><span class="score-label">exp </span><span class="score-expected">${expSign}${c.expected_score}</span></span>
+          <span><span class="score-label">actual </span><span class="score-actual">${actSign}${c.actual_score}</span></span>
+        </div>
+      </div>`;
+  }).join('');
+
+  document.getElementById('par-analysis-result').innerHTML =
+    `<div class="contract-rank-list">${rows}</div>
+     <div style="font-size:0.7rem;color:#5a9a65;margin-top:8px">
+       Expected score averaged over ${data.k} sampled EW hands (double dummy).
+       Actual score is on this specific deal.
+     </div>`;
 }
 
 // ---------------------------------------------------------------------------
