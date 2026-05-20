@@ -400,11 +400,13 @@ if __name__ == "__main__":
     parser.add_argument("--ew-samples",     type=int,   default=10,
                         help="EW re-deals per episode for counterfactual reward")
     parser.add_argument("--lr",             type=float, default=3e-4)
-    parser.add_argument("--reward-mode",    default="expected_score",
-                        choices=["expected_score", "par_relative"],
-                        help="expected_score: IMP(achieved); par_relative: IMP(achieved−par)")
-    parser.add_argument("--strain-bonus",   type=float, default=0.5,
-                        help="IMP bonus added when NS bids the optimal strain")
+    parser.add_argument("--reward-mode",    default="optimal_contract_regret",
+                        choices=["optimal_contract_regret", "expected_score", "par_relative"],
+                        help="optimal_contract_regret: IMP(achieved−score(C*)); "
+                             "expected_score: IMP(achieved); "
+                             "par_relative: IMP(achieved−par)")
+    parser.add_argument("--strain-bonus",   type=float, default=0.0,
+                        help="IMP bonus when NS bids the optimal strain (0 = off)")
     parser.add_argument("--entropy-coef",   type=float, default=0.05,
                         help="Entropy bonus coefficient at the start of training")
     parser.add_argument("--entropy-final",  type=float, default=0.01,
