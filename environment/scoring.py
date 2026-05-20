@@ -262,7 +262,7 @@ def batch_expected_imp_rewards(
     k: int,
     rng=None,
     strain_bonus: float = 0.0,
-    reward_mode: str = "optimal_contract_regret",
+    reward_mode: str = "expected_score",
 ) -> tuple:
     """
     Compute counterfactual expected rewards for a batch of episodes.
@@ -341,7 +341,7 @@ def precomputed_imp_rewards(
     vulnerability: str,
     k: int = None,
     strain_bonus: float = 0.0,
-    reward_mode: str = "optimal_contract_regret",
+    reward_mode: str = "expected_score",
 ) -> tuple:
     """
     Compute expected rewards using pre-computed DDS tables from a dataset.
