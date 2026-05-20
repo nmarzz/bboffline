@@ -1,7 +1,7 @@
 """Neural network bidding agent.
 
 Architecture (shared weights between N and S):
-  - Hand encoder: MLP(52 → hidden, n_layers deep)
+  - Hand encoder: suit-aware (default) or flat MLP
   - Bid embedding: Embedding(vocab → embed_dim)
   - Auction encoder: LSTM(embed_dim → hidden, n_lstm_layers)
   - Combined: concat([hand_emb, lstm_final]) → 2*hidden
@@ -23,6 +23,11 @@ from environment.auction import NUM_BIDS, MAX_AUCTION_LEN
 _DIR_TOKEN_OFFSET = NUM_BIDS
 _VOCAB_SIZE       = NUM_BIDS + 4  # bids (0-37) + 4 direction tokens
 
+# Cards are ordered suit-major: indices 0-12 = clubs, 13-25 = diamonds,
+# 26-38 = hearts, 39-51 = spades (rank 0=2 through rank 12=A within each suit)
+_N_SUITS  = 4
+_N_RANKS  = 13
+
 
 def _mlp(in_dim: int, hidden: int, out_dim: int, n_layers: int) -> nn.Sequential:
     """n_layers hidden layers of size `hidden`, then output layer."""
@@ -35,24 +40,62 @@ def _mlp(in_dim: int, hidden: int, out_dim: int, n_layers: int) -> nn.Sequential
     return nn.Sequential(*layers)
 
 
+class SuitAwareHandEncoder(nn.Module):
+    """
+    Encode each suit independently with shared weights, then aggregate.
+
+    The hand (52,) is reshaped to (4, 13) — one row per suit. A single
+    Linear(13 → embed_dim) is applied to every suit, giving each suit its
+    own embedding that captures length and honor structure. The four suit
+    embeddings are concatenated and passed through an aggregation MLP to
+    produce a hidden-dimensional hand embedding.
+
+    Shared weights across suits give the right inductive bias: the same
+    features (length, voids, top-honor presence) matter in every suit.
+    The concatenation rather than mean-pooling preserves which suit is
+    which, so the model can learn that spades and hearts differ from
+    clubs and diamonds in terms of scoring.
+    """
+
+    def __init__(self, hidden: int, embed_dim: int, mlp_layers: int):
+        super().__init__()
+        self.suit_linear = nn.Linear(_N_RANKS, embed_dim)
+        self.agg = _mlp(_N_SUITS * embed_dim, hidden, hidden, mlp_layers)
+
+    def forward(self, hand: torch.Tensor) -> torch.Tensor:
+        # hand: (B, 52) → (B, 4, 13)
+        suits = hand.view(hand.shape[0], _N_SUITS, _N_RANKS)
+        # shared linear + ReLU across all suits: (B, 4, embed_dim)
+        suit_embs = torch.relu(self.suit_linear(suits))
+        # flatten suits: (B, 4 * embed_dim)
+        flat = suit_embs.view(hand.shape[0], -1)
+        return self.agg(flat)
+
+
 class BiddingNet(nn.Module):
     """
     Shared network for all bidding seats.
 
     Args:
-        hidden:      width of every hidden layer
-        embed_dim:   bid-token embedding size
-        mlp_layers:  number of hidden layers in hand encoder and output heads
-        lstm_layers: number of stacked LSTM layers for auction encoding
+        hidden:       width of every hidden layer
+        embed_dim:    bid-token embedding size; also used as the per-suit
+                      embedding size in the suit-aware hand encoder
+        mlp_layers:   number of hidden layers in hand encoder and output heads
+        lstm_layers:  number of stacked LSTM layers for auction encoding
+        hand_encoder: "suit" (default) — suit-aware encoder with shared weights
+                      per suit; "mlp" — flat MLP over the raw 52-bit vector
     """
 
     def __init__(self, hidden: int = 128, embed_dim: int = 32,
-                 mlp_layers: int = 1, lstm_layers: int = 1):
+                 mlp_layers: int = 1, lstm_layers: int = 1,
+                 hand_encoder: str = "suit"):
         super().__init__()
         self.hidden = hidden
 
-        # Hand encoder: MLP with mlp_layers hidden layers
-        self.hand_enc = _mlp(52, hidden, hidden, mlp_layers)
+        if hand_encoder == "suit":
+            self.hand_enc = SuitAwareHandEncoder(hidden, embed_dim, mlp_layers)
+        else:
+            self.hand_enc = _mlp(52, hidden, hidden, mlp_layers)
 
         # Auction encoder
         self.bid_emb = nn.Embedding(_VOCAB_SIZE + 1, embed_dim,
