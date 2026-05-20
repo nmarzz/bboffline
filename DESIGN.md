@@ -49,24 +49,37 @@ That is, the best contract is the one that maximises the *expected* NS score ave
 
 ### 3.2  Reward modes
 
-Two reward modes are supported via `--reward-mode`:
+Three reward modes are supported via `--reward-mode`:
 
 | Mode | Formula | Default |
 |------|---------|---------|
-| `expected_score` | $\mathrm{IMP}(\mathrm{score}(A, \text{EW}_k))$ | ✓ |
+| `optimal_contract_regret` | $\mathrm{IMP}(\mathrm{score}(A, \text{EW}_k) - \mathrm{score}(C^*, \text{EW}_k))$ | ✓ |
+| `expected_score` | $\mathrm{IMP}(\mathrm{score}(A, \text{EW}_k))$ | |
 | `par_relative` | $\mathrm{IMP}(\mathrm{score}(A, \text{EW}_k) - \mathrm{par}(\text{NS}, \text{EW}_k))$ | |
 
-**`expected_score`** is the primary mode. It rewards NS directly for the IMP value of the score they achieve, with a pass-out (score = 0) mapping to exactly 0 IMPs. There is no par baseline to subtract: the agent is simply trying to maximise its expected score given its hands. This is the correct objective — par is a double-dummy concept computed on the realised EW layout, not a quantity NS can target.
+**`optimal_contract_regret`** is the primary mode. For each NS holding, $C^*$ is determined by scanning all 70 candidate NS contracts and selecting the one with the highest expected score across the $K$ EW samples:
 
-**`par_relative`** is retained for comparison and ablation. It measures how far NS's auction deviates from the double-dummy optimal on the realised EW layout.
+$$C^* = \underset{C}{\arg\max}\; \frac{1}{K}\sum_{k=1}^{K} \mathrm{score}(C, \text{EW}_k)$$
+
+The reward is then the IMP value of the point swing between what NS bid and what $C^*$ would have scored on the same EW layout:
+
+$$r = \frac{1}{K} \sum_{k=1}^{K} \mathrm{IMP}\!\left(\mathrm{score}(A, \text{EW}_k) - \mathrm{score}(C^*, \text{EW}_k)\right)$$
+
+This is a **regret** signal: it is exactly 0 when NS bids $C^*$ and negative otherwise, always lying in $[-24, 0]$. The baseline $C^*$ is stable — it is fixed given the NS hands and the EW distribution — which makes it a cleaner training signal than par (which is computed on the realised EW layout and fluctuates with each EW draw).
+
+$C^*$ is computed via pure numpy indexing into a precomputed scoring lookup table (built once per vulnerability from 980 endplay calls, then cached), so it adds negligible overhead.
+
+**`expected_score`** rewards the absolute IMP value of the achieved score. A pass-out maps to 0 IMPs naturally; the range is $[-24, +24]$.
+
+**`par_relative`** is retained for comparison and ablation. It measures deviation from the double-dummy par on the realised EW layout.
 
 ### 3.3  Variance reduction via EW re-sampling
 
-A single EW layout introduces substantial variance. The reward is estimated as the **expectation over K independently re-sampled EW completions**, holding NS fixed:
+A single EW layout introduces substantial variance into any reward that depends on card play. The reward is estimated as the **expectation over $K$ independently re-sampled EW completions**, holding NS fixed:
 
-$$r = \frac{1}{K} \sum_{k=1}^{K} \mathrm{IMP}\!\left(\mathrm{score}(A, \text{EW}_k)\right)$$
+$$r = \frac{1}{K} \sum_{k=1}^{K} \mathrm{IMP}\!\left(\mathrm{score}(A, \text{EW}_k) - \mathrm{score}(C^*, \text{EW}_k)\right)$$
 
-The NS hands are fixed (they drove the bidding); EW cards are re-shuffled $K$ times and DDS is queried for each. This is an unbiased estimator of the expected reward conditioned on the NS hands.
+The NS hands are fixed (they drove the bidding); EW cards are re-shuffled $K$ times and DDS is queried for each. This is an unbiased estimator of the expected regret conditioned on the NS hands.
 
 ---
 
@@ -167,7 +180,7 @@ A passed-out auction scores exactly 0 IMPs, which is a natural floor — the age
 
 ### 7.1  Strain bonus
 
-An auxiliary reward of `--strain-bonus` IMPs (default 0.5) is added whenever NS declares in the strain where they hold the most double-dummy tricks, averaged across EW re-samples. This amplifies the strain-selection signal early in training when the primary reward signal is weak. Because `expected_score` already rewards the correct strain through higher expected scores, the bonus is set conservatively; it exists to accelerate learning, not to define the objective.
+An optional auxiliary reward of `--strain-bonus` IMPs (default 0.0, off) is added whenever NS declares in the strain where they hold the most double-dummy tricks, averaged across EW re-samples. Under `optimal_contract_regret` the correct strain is already penalised directly and proportionally through the regret signal, so the bonus is redundant in principle. It is retained as a training-speed knob: setting it to a small value (e.g. 0.5) can accelerate strain learning early in training before the agent consistently makes contracts. Note that any positive value breaks the clean $r \leq 0$ property of the regret reward.
 
 ---
 
