@@ -30,6 +30,12 @@ class BridgeDataset:
         self.dds_tables = np.load(os.path.join(data_dir, "dds_tables.npy"),
                                   mmap_mode="r")
 
+        ew_counts_path = os.path.join(data_dir, "ew_counts.npy")
+        if os.path.exists(ew_counts_path):
+            self.ew_counts = np.load(ew_counts_path)
+        else:
+            self.ew_counts = None
+
     def __len__(self):
         return self.n_deals
 
@@ -47,3 +53,13 @@ class BridgeDataset:
         ns  = self.ns_hands[indices].astype(np.float32)
         dds = self.dds_tables[indices]
         return ns, dds
+
+    def get_ew_counts(self, indices) -> np.ndarray:
+        """Return per-deal EW sample counts for the given indices.
+
+        Returns a uniform array of self.ew_samples when all deals have the
+        same number of EW samples (no ew_counts.npy file was saved).
+        """
+        if self.ew_counts is not None:
+            return self.ew_counts[indices]
+        return np.full(len(indices), self.ew_samples, dtype=np.int32)

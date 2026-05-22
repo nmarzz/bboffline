@@ -8,6 +8,9 @@ Key options:
     --batch-episodes  Auctions per PPO update batch (default 512)
     --ew-samples      EW completions used for counterfactual reward (default 10)
     --dataset         Path to pre-computed dataset dir (strongly recommended)
+    --eval-dataset    Path to held-out dataset for periodic greedy evaluation
+    --eval-interval   Episodes between greedy evals (default 10_000)
+    --wandb-project   W&B project name; omit to disable W&B logging
     --hidden          Hidden width of every MLP/LSTM layer (default 128)
     --embed-dim       Bid token embedding size (default 32)
     --mlp-layers      Hidden layers in hand-encoder and output heads (default 1)
@@ -30,7 +33,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 from environment.deal import random_deal
 from environment.auction import AuctionState, NUM_BIDS, MAX_AUCTION_LEN
-from environment.scoring import batch_expected_imp_rewards, precomputed_imp_rewards
+from environment.scoring import batch_expected_imp_rewards, precomputed_imp_rewards, imps
 from environment.dataset import BridgeDataset
 from agents.nn_agent import BiddingNet, NNAgent, count_params
 from training.ppo import PPOUpdater, RolloutBuffer, Transition
@@ -49,9 +52,9 @@ def collect_batch_vectorized(
     dds_tables: np.ndarray,     # (N, K, 5, 4) uint8
     vulnerability: str,
     device: str,
-    ew_samples: int,
     strain_bonus: float = 0.0,
     reward_mode: str = "expected_score",
+    ew_counts: np.ndarray = None,  # (N,) per-deal EW sample counts, or None
 ) -> tuple:
     """
     Run N auctions in lockstep: at every step each active auction takes one
@@ -144,8 +147,9 @@ def collect_batch_vectorized(
 
     # Compute rewards from pre-computed tables (pure numpy, no DDS)
     exp_imps, exp_pars = precomputed_imp_rewards(
-        dds_tables, auctions, vulnerability, k=ew_samples,
+        dds_tables, auctions, vulnerability,
         strain_bonus=strain_bonus, reward_mode=reward_mode,
+        ew_counts=ew_counts,
     )
     for trans, imp in zip(all_trans, exp_imps):
         if trans:
@@ -256,6 +260,92 @@ def collect_batch_sequential(
 
 
 # ---------------------------------------------------------------------------
+# Greedy evaluation
+# ---------------------------------------------------------------------------
+
+@torch.no_grad()
+def eval_greedy(
+    net: BiddingNet,
+    eval_dataset: BridgeDataset,
+    device: str,
+    batch_size: int = 1024,
+) -> dict:
+    """Argmax rollouts over the full eval dataset. No sampling noise.
+
+    Returns {"mean_imp", "std_imp", "mean_par"}.
+    """
+    net.eval()
+    all_imps = []
+    all_pars = []
+
+    for start in range(0, eval_dataset.n_deals, batch_size):
+        batch_idx  = np.arange(start, min(start + batch_size, eval_dataset.n_deals))
+        ns_hands, dds_tables = eval_dataset.get(batch_idx)
+        ew_counts  = eval_dataset.get_ew_counts(batch_idx)
+
+        B        = len(batch_idx)
+        auctions = [AuctionState(uncontested=True) for _ in range(B)]
+        active   = np.ones(B, dtype=bool)
+
+        while active.any():
+            active_idx = np.where(active)[0]
+            players    = np.array([auctions[i].current_player() for i in active_idx])
+
+            for li in np.where(players % 2 == 1)[0]:
+                idx = active_idx[li]
+                auctions[idx].apply(0)
+                if auctions[idx].is_complete():
+                    active[idx] = False
+
+            ns_local = np.where(players % 2 == 0)[0]
+            if ns_local.size == 0:
+                continue
+
+            ns_idx      = active_idx[ns_local]
+            C           = ns_idx.size
+            batch_hands = np.empty((C, 52),             dtype=np.float32)
+            batch_seqs  = np.full((C, MAX_AUCTION_LEN), -1, dtype=np.int64)
+            batch_dirs  = np.empty(C,                   dtype=np.int64)
+            batch_masks = np.zeros((C, NUM_BIDS),       dtype=bool)
+
+            for k, idx in enumerate(ns_idx):
+                player = auctions[idx].current_player()
+                batch_hands[k] = ns_hands[idx, 0 if player == 0 else 1]
+                batch_dirs[k]  = player
+                seq = auctions[idx].to_sequence()
+                batch_seqs[k, :len(seq)] = seq
+                for b in auctions[idx].valid_bids():
+                    batch_masks[k, b] = True
+
+            log_probs_t, _ = net(
+                torch.from_numpy(batch_hands).to(device),
+                torch.from_numpy(batch_seqs).to(device),
+                torch.from_numpy(batch_dirs).to(device),
+                torch.from_numpy(batch_masks).to(device),
+            )
+            actions_t = log_probs_t.argmax(dim=-1)  # greedy
+
+            for k, idx in enumerate(ns_idx):
+                auctions[idx].apply(actions_t[k].item())
+                if auctions[idx].is_complete():
+                    active[idx] = False
+
+        imps, pars = precomputed_imp_rewards(
+            dds_tables, auctions, eval_dataset.vulnerability,
+            ew_counts=ew_counts,
+        )
+        all_imps.extend(imps)
+        all_pars.extend(pars)
+
+    net.train()
+    return {
+        "mean_imp": float(np.mean(all_imps)),
+        "std_imp":  float(np.std(all_imps)),
+        "mean_par": float(np.mean(all_pars)),
+    }
+
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
@@ -279,12 +369,25 @@ def train(args):
     device = args.device
     rng    = np.random.default_rng(args.seed)
 
+    # ---- W&B ----
+    wandb = None
+    if args.wandb_project:
+        import wandb as _wandb
+        _wandb.init(project=args.wandb_project, config=vars(args))
+        wandb = _wandb
+
     # ---- Dataset ----
     dataset = None
     if args.dataset:
         dataset = BridgeDataset(args.dataset)
         print(f"Dataset: {dataset.n_deals:,} deals  K={dataset.ew_samples}  "
               f"vul={dataset.vulnerability}  ({args.dataset})")
+
+    # ---- Eval dataset ----
+    eval_dataset = None
+    if args.eval_dataset:
+        eval_dataset = BridgeDataset(args.eval_dataset)
+        print(f"Eval dataset: {eval_dataset.n_deals:,} deals  ({args.eval_dataset})")
 
     # ---- Network ----
     net = BiddingNet(
@@ -314,7 +417,7 @@ def train(args):
     # ---- Metrics log ----
     metrics_path = "logs/train_metrics.csv"
     with open(metrics_path, "w", newline="") as f:
-        csv.writer(f).writerow(["episode", "mean_imp", "mean_par",
+        csv.writer(f).writerow(["episode", "mean_imp", "mean_par_pts", "mean_par_imp",
                                  "policy_loss", "value_loss", "entropy",
                                  "elapsed_s"])
 
@@ -328,10 +431,12 @@ def train(args):
         if dataset is not None:
             indices             = dataset.sample_indices(args.batch_episodes, rng)
             ns_hands, dds_tbls  = dataset.get(indices)
+            ew_counts           = dataset.get_ew_counts(indices)
             flat_trans, exp_imps, exp_pars = collect_batch_vectorized(
                 net, ns_hands, dds_tbls,
-                dataset.vulnerability, device, args.ew_samples,
+                dataset.vulnerability, device,
                 strain_bonus=args.strain_bonus, reward_mode=args.reward_mode,
+                ew_counts=ew_counts,
             )
         else:
             flat_trans, exp_imps, exp_pars = collect_batch_sequential(
@@ -358,22 +463,48 @@ def train(args):
 
         # ---- Logging ----
         if len(window_imps) >= 500 or episode >= args.episodes:
-            mean_imp = float(np.mean(window_imps))
-            mean_par = float(np.mean(window_pars))
-            elapsed  = time.time() - t0
+            mean_imp     = float(np.mean(window_imps))
+            mean_par     = float(np.mean(window_pars))
+            mean_par_imp = float(imps(int(mean_par)))
+            elapsed      = time.time() - t0
             print(f"ep={episode:7d}  mean_IMP={mean_imp:+.3f}  "
-                  f"mean_par={mean_par:.1f}  "
+                  f"par={mean_par:.1f}pts ({mean_par_imp:+.1f}IMP)  "
                   f"policy_loss={loss_stats['policy_loss']:.4f}  "
                   f"entropy={loss_stats['entropy']:.3f}  "
                   f"elapsed={elapsed:.0f}s")
             with open(metrics_path, "a", newline="") as f:
-                csv.writer(f).writerow([episode, mean_imp, mean_par,
+                csv.writer(f).writerow([episode, mean_imp, mean_par, mean_par_imp,
                                         loss_stats["policy_loss"],
                                         loss_stats["value_loss"],
                                         loss_stats["entropy"],
                                         f"{elapsed:.1f}"])
+            if wandb:
+                wandb.log({
+                    "train/mean_imp":     mean_imp,
+                    "train/mean_par_pts": mean_par,
+                    "train/mean_par_imp": mean_par_imp,
+                    "train/policy_loss":  loss_stats["policy_loss"],
+                    "train/value_loss":   loss_stats["value_loss"],
+                    "train/entropy":      loss_stats["entropy"],
+                    "train/lr":           updater._lr,
+                }, step=episode)
             window_imps.clear()
             window_pars.clear()
+
+        # ---- Greedy eval ----
+        if eval_dataset is not None and episode % args.eval_interval < args.batch_episodes:
+            eval_stats = eval_greedy(net, eval_dataset, device)
+            eval_par_imp = float(imps(int(eval_stats["mean_par"])))
+            print(f"  [eval]  mean_IMP={eval_stats['mean_imp']:+.3f}  "
+                  f"std={eval_stats['std_imp']:.3f}  "
+                  f"par={eval_stats['mean_par']:.1f}pts ({eval_par_imp:+.1f}IMP)")
+            if wandb:
+                wandb.log({
+                    "eval/mean_imp":     eval_stats["mean_imp"],
+                    "eval/std_imp":      eval_stats["std_imp"],
+                    "eval/mean_par_pts": eval_stats["mean_par"],
+                    "eval/mean_par_imp": eval_par_imp,
+                }, step=episode)
 
         # ---- Checkpoints ----
         if episode % 10_000 < args.batch_episodes:
@@ -382,6 +513,8 @@ def train(args):
             print(f"  saved checkpoint → {ckpt}")
 
     torch.save(net.state_dict(), "checkpoints/net_final.pt")
+    if wandb:
+        wandb.finish()
     print("Training complete.")
 
 
@@ -419,6 +552,12 @@ if __name__ == "__main__":
     parser.add_argument("--seed",           type=int,   default=42)
     parser.add_argument("--dataset",        default=None,
                         help="Path to pre-computed dataset dir (skips live DDS)")
+    parser.add_argument("--eval-dataset",   default=None,
+                        help="Path to held-out dataset for periodic greedy evaluation")
+    parser.add_argument("--eval-interval",  type=int, default=10_000,
+                        help="Episodes between greedy evals")
+    parser.add_argument("--wandb-project",  default=None,
+                        help="W&B project name; omit to disable W&B logging")
 
     # Network architecture
     parser.add_argument("--hidden",       type=int, default=128,

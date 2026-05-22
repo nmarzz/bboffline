@@ -339,9 +339,9 @@ def precomputed_imp_rewards(
     dds_tables_batch: np.ndarray,
     auctions: list,
     vulnerability: str,
-    k: int = None,
     strain_bonus: float = 0.0,
     reward_mode: str = "expected_score",
+    ew_counts: np.ndarray = None,
 ) -> tuple:
     """
     Compute expected rewards using pre-computed DDS tables from a dataset.
@@ -351,22 +351,22 @@ def precomputed_imp_rewards(
         dds_tables_batch: uint8 array (N, K, 5, 4) from BridgeDataset.get()
         auctions:         list of N completed AuctionState objects
         vulnerability:    "none" | "ns" | "ew" | "both"
-        k:                number of EW samples to use (≤ K stored; None = use all)
         reward_mode:      see batch_expected_imp_rewards
+        ew_counts:        optional int array (N,) of per-deal EW sample counts;
+                          when None, all K stored samples are used for every deal
 
     Returns:
         (expected_rewards, expected_pars)  — same contract as batch_expected_imp_rewards
     """
     K_stored = dds_tables_batch.shape[1]
-    if k is None or k > K_stored:
-        k = K_stored
 
     scoring_table = _get_scoring_table(vulnerability)
     expected_imps = []
     expected_pars = []
 
     for i, auction in enumerate(auctions):
-        tables_k = dds_tables_batch[i, :k]   # (k, 5, 4)
+        k_i = int(ew_counts[i]) if ew_counts is not None else K_stored
+        tables_k = dds_tables_batch[i, :k_i]   # (k_i, 5, 4)
 
         cf          = auction.final_contract()
         ns_declared = cf is not None and cf[2] in (0, 2)
@@ -378,7 +378,7 @@ def precomputed_imp_rewards(
 
         imp_samples = []
         par_samples = []
-        for k_idx in range(k):
+        for k_idx in range(k_i):
             table    = tables_k[k_idx]
             par      = ns_par_score(table, vulnerability)
             achieved = (int(achieved_scores_k[k_idx]) if reward_mode == "optimal_contract_regret"
