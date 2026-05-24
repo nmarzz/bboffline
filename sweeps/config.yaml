@@ -1,0 +1,33 @@
+program: sweeps/agent.py
+method: bayes
+metric:
+  name: eval/mean_imp
+  goal: maximize
+
+# Early termination: kill runs that are clearly underperforming by ep 30k
+early_terminate:
+  type: hyperband
+  min_iter: 30000
+  eta: 2
+
+# Fixed from sweep 2: transformer, gae_lambda=0.99, mlp_layers=1, lstm_layers=1
+parameters:
+  # --- Optimisation ---
+  lr:
+    distribution: log_uniform_values
+    min: 0.0005   # raised from 0.0002 — low lr never learned
+    max: 0.002
+  batch_episodes:
+    values: [512, 1024]
+
+  # --- Exploration: sweep lower entropy now transformer is fixed ---
+  entropy_coef:
+    values: [0.01, 0.03, 0.05, 0.1]
+
+  # --- Model capacity: bump embed_dim ceiling ---
+  embed_dim:
+    values: [64, 128]
+
+  # --- Mini-batch size ---
+  mini_batch_size:
+    values: [128, 256, 512]
