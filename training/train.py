@@ -427,6 +427,16 @@ def train(args):
         ).to(device)
         print(f"CentralizedCritic  params: {count_params(critic):,}")
 
+    # ---- Warm-start from checkpoint ----
+    if getattr(args, "checkpoint", None):
+        ckpt = torch.load(args.checkpoint, map_location=device)
+        net.load_state_dict(ckpt)
+        print(f"Loaded policy weights from {args.checkpoint}")
+    if getattr(args, "critic_checkpoint", None) and critic is not None:
+        ckpt = torch.load(args.critic_checkpoint, map_location=device)
+        critic.load_state_dict(ckpt)
+        print(f"Loaded critic weights from {args.critic_checkpoint}")
+
     agent   = NNAgent(net, device=device)
     updater = PPOUpdater(net, lr=args.lr, entropy_coef=args.entropy_coef, device=device,
                          critic=critic, critic_lr=args.critic_lr,
@@ -597,7 +607,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--hand-encoder",    default="suit", choices=["suit", "mlp"])
     parser.add_argument("--auction-encoder", default="lstm", choices=["lstm", "transformer"])
     parser.add_argument("--gae-lambda",      type=float, default=0.95)
-    parser.add_argument("--mini-batch-size", type=int,   default=256)
+    parser.add_argument("--mini-batch-size",    type=int,   default=256)
+    # Warm-start: load pre-trained weights before training begins
+    parser.add_argument("--checkpoint",         default=None,
+                        help="Path to a policy net .pt file to warm-start from.")
+    parser.add_argument("--critic-checkpoint",  default=None,
+                        help="Path to a critic net .pt file to warm-start from.")
     return parser
 
 
