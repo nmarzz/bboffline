@@ -327,7 +327,7 @@ def batch_expected_imp_rewards(
             strain_correct = ns_declared and bid_strain == best_ns_strain(table)
             reward = _episode_reward(achieved, par, optimal, reward_mode, strain_correct, strain_bonus)
             imp_samples.append(reward)
-            par_samples.append(par)
+            par_samples.append(imps(par))
 
         expected_imps.append(float(np.mean(imp_samples)))
         expected_pars.append(float(np.mean(par_samples)))
@@ -387,7 +387,7 @@ def precomputed_imp_rewards(
             strain_correct = ns_declared and bid_strain == best_ns_strain(table)
             reward = _episode_reward(achieved, par, optimal, reward_mode, strain_correct, strain_bonus)
             imp_samples.append(reward)
-            par_samples.append(par)
+            par_samples.append(imps(par))
 
         expected_imps.append(float(np.mean(imp_samples)))
         expected_pars.append(float(np.mean(par_samples)))

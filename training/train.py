@@ -21,6 +21,7 @@ Saves checkpoints to checkpoints/net_<step>.pt every 10k episodes.
 """
 
 import argparse
+import math
 import os
 import csv
 import time
@@ -33,9 +34,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 from environment.deal import random_deal
 from environment.auction import AuctionState, NUM_BIDS, MAX_AUCTION_LEN
-from environment.scoring import batch_expected_imp_rewards, precomputed_imp_rewards, imps
+from environment.scoring import batch_expected_imp_rewards, precomputed_imp_rewards
 from environment.dataset import BridgeDataset
-from agents.nn_agent import BiddingNet, NNAgent, count_params
+from agents.nn_agent import BiddingNet, NNAgent, CentralizedCritic, count_params
 from training.ppo import PPOUpdater, RolloutBuffer, Transition
 
 _DENOM_NAMES = ["C", "D", "H", "S", "NT"]
@@ -54,7 +55,8 @@ def collect_batch_vectorized(
     device: str,
     strain_bonus: float = 0.0,
     reward_mode: str = "expected_score",
-    ew_counts: np.ndarray = None,  # (N,) per-deal EW sample counts, or None
+    ew_counts: np.ndarray = None,   # (N,) per-deal EW sample counts, or None
+    critic: CentralizedCritic = None,
 ) -> tuple:
     """
     Run N auctions in lockstep: at every step each active auction takes one
@@ -114,6 +116,10 @@ def collect_batch_vectorized(
 
         with torch.no_grad():
             log_probs_t, vals_t = net(hands_t, seqs_t, dirs_t, masks_t)
+            if critic is not None:
+                north_t = torch.from_numpy(ns_hands[ns_idx, 0]).to(device)
+                south_t = torch.from_numpy(ns_hands[ns_idx, 1]).to(device)
+                vals_t  = critic(north_t, south_t, seqs_t)   # (B, 1)
 
         actions_t = Categorical(logits=log_probs_t).sample()  # (B,)
 
@@ -126,7 +132,7 @@ def collect_batch_vectorized(
             auctions[idx].apply(action)
 
             all_trans[idx].append(Transition(
-                hand        = batch_hands[k],
+                ns_hands    = ns_hands[idx],        # (2, 52) — both hands
                 auction_seq = batch_seqs[k].copy(),
                 direction   = player,
                 valid_mask  = batch_masks[k].copy(),
@@ -180,6 +186,8 @@ def run_auction(net_agent: NNAgent, deal, device: str):
         padded[: len(seq)] = seq
 
         hand = deal.hands[player]
+        # ns_hands: index 0=North (player 0), index 1=South (player 2), always
+        ns_h = np.stack([deal.hands[0], deal.hands[2]])   # (2, 52)
 
         if player in (1, 3):  # E/W always pass
             action, log_prob, value = 0, 0.0, 0.0
@@ -206,7 +214,7 @@ def run_auction(net_agent: NNAgent, deal, device: str):
 
         if player in (0, 2):
             transitions.append(Transition(
-                hand        = hand,
+                ns_hands    = ns_h,
                 auction_seq = padded,
                 direction   = player,
                 valid_mask  = valid_mask,
@@ -339,9 +347,9 @@ def eval_greedy(
 
     net.train()
     return {
-        "mean_imp": float(np.mean(all_imps)),
-        "std_imp":  float(np.std(all_imps)),
-        "mean_par": float(np.mean(all_pars)),
+        "mean_imp":     float(np.mean(all_imps)),
+        "std_imp":      float(np.std(all_imps)),
+        "mean_par_imp": float(np.mean(all_pars)),   # mean(IMP(par_i)), already in IMPs
     }
 
 
@@ -391,15 +399,31 @@ def train(args):
 
     # ---- Network ----
     net = BiddingNet(
-        hidden       = args.hidden,
-        embed_dim    = args.embed_dim,
-        mlp_layers   = args.mlp_layers,
-        lstm_layers  = args.lstm_layers,
-        hand_encoder = args.hand_encoder,
+        hidden           = args.hidden,
+        embed_dim        = args.embed_dim,
+        mlp_layers       = args.mlp_layers,
+        lstm_layers      = args.lstm_layers,
+        hand_encoder     = args.hand_encoder,
+        auction_encoder  = args.auction_encoder,
     ).to(device)
 
+    # ---- Centralized critic (optional) ----
+    critic = None
+    if args.centralized_critic:
+        critic = CentralizedCritic(
+            hidden          = args.hidden,
+            embed_dim       = args.embed_dim,
+            mlp_layers      = args.mlp_layers,
+            lstm_layers     = args.lstm_layers,
+            auction_encoder = args.auction_encoder,
+        ).to(device)
+        print(f"CentralizedCritic  params: {count_params(critic):,}")
+
     agent   = NNAgent(net, device=device)
-    updater = PPOUpdater(net, lr=args.lr, entropy_coef=args.entropy_coef, device=device)
+    updater = PPOUpdater(net, lr=args.lr, entropy_coef=args.entropy_coef, device=device,
+                         critic=critic, critic_lr=args.critic_lr,
+                         gae_lambda=args.gae_lambda,
+                         mini_batch_size=args.mini_batch_size)
     buffer  = RolloutBuffer()
 
     print(f"BiddingNet  hidden={args.hidden}  embed={args.embed_dim}  "
@@ -417,7 +441,7 @@ def train(args):
     # ---- Metrics log ----
     metrics_path = "logs/train_metrics.csv"
     with open(metrics_path, "w", newline="") as f:
-        csv.writer(f).writerow(["episode", "mean_imp", "mean_par_pts", "mean_par_imp",
+        csv.writer(f).writerow(["episode", "mean_imp", "mean_par_imp",
                                  "policy_loss", "value_loss", "entropy",
                                  "elapsed_s"])
 
@@ -436,7 +460,7 @@ def train(args):
                 net, ns_hands, dds_tbls,
                 dataset.vulnerability, device,
                 strain_bonus=args.strain_bonus, reward_mode=args.reward_mode,
-                ew_counts=ew_counts,
+                ew_counts=ew_counts, critic=critic,
             )
         else:
             flat_trans, exp_imps, exp_pars = collect_batch_sequential(
@@ -447,7 +471,10 @@ def train(args):
 
         # ---- PPO update ----
         frac = episode / args.episodes
-        updater.set_lr(args.lr * (1.0 - frac * 2 / 3))
+        # Cosine annealing: lr_max → lr_min over training
+        _lr_min = 1e-5
+        _cosine_lr = _lr_min + 0.5 * (args.lr - _lr_min) * (1.0 + math.cos(math.pi * frac))
+        updater.set_lr(_cosine_lr)
         updater.set_entropy_coef(
             args.entropy_coef + (args.entropy_final - args.entropy_coef) * frac
         )
@@ -464,46 +491,47 @@ def train(args):
         # ---- Logging ----
         if len(window_imps) >= 500 or episode >= args.episodes:
             mean_imp     = float(np.mean(window_imps))
-            mean_par     = float(np.mean(window_pars))
-            mean_par_imp = float(imps(int(mean_par)))
+            mean_par_imp = float(np.mean(window_pars))   # already in IMPs
             elapsed      = time.time() - t0
+            critic_loss_str = (f"  critic_loss={loss_stats['critic_loss']:.4f}"
+                               if critic is not None else "")
             print(f"ep={episode:7d}  mean_IMP={mean_imp:+.3f}  "
-                  f"par={mean_par:.1f}pts ({mean_par_imp:+.1f}IMP)  "
+                  f"mean_par_IMP={mean_par_imp:+.3f}  "
                   f"policy_loss={loss_stats['policy_loss']:.4f}  "
-                  f"entropy={loss_stats['entropy']:.3f}  "
-                  f"elapsed={elapsed:.0f}s")
+                  f"entropy={loss_stats['entropy']:.3f}"
+                  f"{critic_loss_str}  elapsed={elapsed:.0f}s")
             with open(metrics_path, "a", newline="") as f:
-                csv.writer(f).writerow([episode, mean_imp, mean_par, mean_par_imp,
+                csv.writer(f).writerow([episode, mean_imp, mean_par_imp,
                                         loss_stats["policy_loss"],
                                         loss_stats["value_loss"],
                                         loss_stats["entropy"],
                                         f"{elapsed:.1f}"])
             if wandb:
-                wandb.log({
+                log_dict = {
                     "train/mean_imp":     mean_imp,
-                    "train/mean_par_pts": mean_par,
                     "train/mean_par_imp": mean_par_imp,
                     "train/policy_loss":  loss_stats["policy_loss"],
                     "train/value_loss":   loss_stats["value_loss"],
                     "train/entropy":      loss_stats["entropy"],
                     "train/lr":           updater._lr,
-                }, step=episode)
+                }
+                if critic is not None:
+                    log_dict["train/critic_loss"] = loss_stats["critic_loss"]
+                wandb.log(log_dict, step=episode)
             window_imps.clear()
             window_pars.clear()
 
         # ---- Greedy eval ----
         if eval_dataset is not None and episode % args.eval_interval < args.batch_episodes:
             eval_stats = eval_greedy(net, eval_dataset, device)
-            eval_par_imp = float(imps(int(eval_stats["mean_par"])))
             print(f"  [eval]  mean_IMP={eval_stats['mean_imp']:+.3f}  "
                   f"std={eval_stats['std_imp']:.3f}  "
-                  f"par={eval_stats['mean_par']:.1f}pts ({eval_par_imp:+.1f}IMP)")
+                  f"mean_par_IMP={eval_stats['mean_par_imp']:+.3f}")
             if wandb:
                 wandb.log({
                     "eval/mean_imp":     eval_stats["mean_imp"],
                     "eval/std_imp":      eval_stats["std_imp"],
-                    "eval/mean_par_pts": eval_stats["mean_par"],
-                    "eval/mean_par_imp": eval_par_imp,
+                    "eval/mean_par_imp": eval_stats["mean_par_imp"],
                 }, step=episode)
 
         # ---- Checkpoints ----
@@ -511,8 +539,14 @@ def train(args):
             ckpt = f"checkpoints/net_{episode}.pt"
             torch.save(net.state_dict(), ckpt)
             print(f"  saved checkpoint → {ckpt}")
+            if critic is not None:
+                critic_ckpt = f"checkpoints/critic_{episode}.pt"
+                torch.save(critic.state_dict(), critic_ckpt)
+                print(f"  saved checkpoint → {critic_ckpt}")
 
     torch.save(net.state_dict(), "checkpoints/net_final.pt")
+    if critic is not None:
+        torch.save(critic.state_dict(), "checkpoints/critic_final.pt")
     if wandb:
         wandb.finish()
     print("Training complete.")
@@ -522,55 +556,42 @@ def train(args):
 # Entry point
 # ---------------------------------------------------------------------------
 
-if __name__ == "__main__":
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         formatter_class=argparse.ArgumentDefaultsHelpFormatter
     )
-
     # Training dynamics
-    parser.add_argument("--episodes",       type=int,   default=200_000,
-                        help="Total auction episodes")
-    parser.add_argument("--batch-episodes", type=int,   default=512,
-                        help="Auctions per PPO update")
-    parser.add_argument("--ew-samples",     type=int,   default=10,
-                        help="EW re-deals per episode for counterfactual reward")
+    parser.add_argument("--episodes",       type=int,   default=200_000)
+    parser.add_argument("--batch-episodes", type=int,   default=512)
+    parser.add_argument("--ew-samples",     type=int,   default=10)
     parser.add_argument("--lr",             type=float, default=3e-4)
     parser.add_argument("--reward-mode",    default="expected_score",
-                        choices=["expected_score", "optimal_contract_regret", "par_relative"],
-                        help="expected_score: IMP(achieved); "
-                             "optimal_contract_regret: IMP(achieved−score(C*)); "
-                             "par_relative: IMP(achieved−par)")
-    parser.add_argument("--strain-bonus",   type=float, default=0.0,
-                        help="IMP bonus when NS bids the optimal strain (0 = off)")
-    parser.add_argument("--entropy-coef",   type=float, default=0.05,
-                        help="Entropy bonus coefficient at the start of training")
-    parser.add_argument("--entropy-final",  type=float, default=0.01,
-                        help="Entropy bonus coefficient at the end of training")
+                        choices=["expected_score", "optimal_contract_regret", "par_relative"])
+    parser.add_argument("--strain-bonus",   type=float, default=0.0)
+    parser.add_argument("--entropy-coef",   type=float, default=0.05)
+    parser.add_argument("--entropy-final",  type=float, default=0.01)
     parser.add_argument("--vulnerability",  default="none",
                         choices=["none", "ns", "ew", "both"])
     parser.add_argument("--device",         default="cpu")
     parser.add_argument("--seed",           type=int,   default=42)
-    parser.add_argument("--dataset",        default=None,
-                        help="Path to pre-computed dataset dir (skips live DDS)")
-    parser.add_argument("--eval-dataset",   default=None,
-                        help="Path to held-out dataset for periodic greedy evaluation")
-    parser.add_argument("--eval-interval",  type=int, default=10_000,
-                        help="Episodes between greedy evals")
-    parser.add_argument("--wandb-project",  default=None,
-                        help="W&B project name; omit to disable W&B logging")
-
+    parser.add_argument("--dataset",        default=None)
+    parser.add_argument("--eval-dataset",   default=None)
+    parser.add_argument("--eval-interval",  type=int,   default=10_000)
+    parser.add_argument("--wandb-project",      default=None)
+    parser.add_argument("--centralized-critic", action="store_true")
+    parser.add_argument("--critic-lr",          type=float, default=3e-4)
     # Network architecture
-    parser.add_argument("--hidden",       type=int, default=128,
-                        help="Hidden width for MLP layers and LSTM")
-    parser.add_argument("--embed-dim",    type=int, default=32,
-                        help="Bid-token embedding dimension; also per-suit embedding size")
-    parser.add_argument("--mlp-layers",   type=int, default=1,
-                        help="Hidden layers in hand encoder and output heads")
-    parser.add_argument("--lstm-layers",  type=int, default=1,
-                        help="Stacked LSTM layers for auction encoding")
-    parser.add_argument("--hand-encoder", default="suit",
-                        choices=["suit", "mlp"],
-                        help="suit: shared per-suit encoder (default); mlp: flat 52-bit MLP")
+    parser.add_argument("--hidden",       type=int, default=128)
+    parser.add_argument("--embed-dim",    type=int, default=32)
+    parser.add_argument("--mlp-layers",   type=int, default=1)
+    parser.add_argument("--lstm-layers",  type=int, default=1)
+    parser.add_argument("--hand-encoder",    default="suit", choices=["suit", "mlp"])
+    parser.add_argument("--auction-encoder", default="lstm", choices=["lstm", "transformer"])
+    parser.add_argument("--gae-lambda",      type=float, default=0.95)
+    parser.add_argument("--mini-batch-size", type=int,   default=256)
+    return parser
 
-    args = parser.parse_args()
+
+if __name__ == "__main__":
+    args = build_parser().parse_args()
     train(args)

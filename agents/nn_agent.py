@@ -3,13 +3,14 @@
 Architecture (shared weights between N and S):
   - Hand encoder: suit-aware (default) or flat MLP
   - Bid embedding: Embedding(vocab → embed_dim)
-  - Auction encoder: LSTM(embed_dim → hidden, n_lstm_layers)
-  - Combined: concat([hand_emb, lstm_final]) → 2*hidden
+  - Auction encoder: LSTM or Transformer (embed_dim → hidden)
+  - Combined: concat([hand_emb, auction_emb]) → 2*hidden
   - Policy head: MLP(2*hidden → NUM_BIDS), masked log-softmax
   - Value head:  MLP(2*hidden → 1)
 
-Direction (0-3) is prepended to the auction sequence as a special token so the
-shared-weight agent knows which seat it is bidding from.
+Direction (0-3) is prepended to the auction sequence as a special token.
+For the LSTM it is the first input; for the Transformer it acts as a CLS token
+whose output is used as the sequence representation.
 """
 
 import numpy as np
@@ -77,33 +78,43 @@ class BiddingNet(nn.Module):
     Shared network for all bidding seats.
 
     Args:
-        hidden:       width of every hidden layer
-        embed_dim:    bid-token embedding size; also used as the per-suit
-                      embedding size in the suit-aware hand encoder
-        mlp_layers:   number of hidden layers in hand encoder and output heads
-        lstm_layers:  number of stacked LSTM layers for auction encoding
-        hand_encoder: "suit" (default) — suit-aware encoder with shared weights
-                      per suit; "mlp" — flat MLP over the raw 52-bit vector
+        hidden:          width of every hidden layer
+        embed_dim:       bid-token embedding size; also per-suit embedding size
+        mlp_layers:      hidden layers in hand encoder and output heads
+        lstm_layers:     LSTM layers, or Transformer encoder layers
+        hand_encoder:    "suit" | "mlp"
+        auction_encoder: "lstm" (default) | "transformer"
     """
 
     def __init__(self, hidden: int = 128, embed_dim: int = 32,
                  mlp_layers: int = 1, lstm_layers: int = 1,
-                 hand_encoder: str = "suit"):
+                 hand_encoder: str = "suit", auction_encoder: str = "lstm"):
         super().__init__()
-        self.hidden = hidden
+        self.hidden           = hidden
+        self._auction_enc_type = auction_encoder
 
         if hand_encoder == "suit":
             self.hand_enc = SuitAwareHandEncoder(hidden, embed_dim, mlp_layers)
         else:
             self.hand_enc = _mlp(52, hidden, hidden, mlp_layers)
 
-        # Auction encoder
-        self.bid_emb = nn.Embedding(_VOCAB_SIZE + 1, embed_dim,
-                                    padding_idx=_VOCAB_SIZE)
-        self.lstm = nn.LSTM(embed_dim, hidden,
-                            num_layers=lstm_layers, batch_first=True)
+        self.bid_emb = nn.Embedding(_VOCAB_SIZE + 1, embed_dim, padding_idx=_VOCAB_SIZE)
 
-        # Output heads: one hidden layer each
+        if auction_encoder == "transformer":
+            # nhead: keep at least 8 dims per head
+            n_heads = max(1, embed_dim // 8)
+            enc_layer = nn.TransformerEncoderLayer(
+                d_model=embed_dim, nhead=n_heads,
+                dim_feedforward=max(64, embed_dim * 4),
+                dropout=0.0, batch_first=True, norm_first=True,
+            )
+            self.transformer  = nn.TransformerEncoder(enc_layer, num_layers=lstm_layers)
+            self.pos_emb      = nn.Embedding(MAX_AUCTION_LEN + 2, embed_dim)
+            self.auction_proj = nn.Linear(embed_dim, hidden)
+        else:
+            self.lstm = nn.LSTM(embed_dim, hidden,
+                                num_layers=lstm_layers, batch_first=True)
+
         combined = hidden * 2
         self.policy_head = _mlp(combined, hidden, NUM_BIDS, mlp_layers)
         self.value_head  = _mlp(combined, hidden, 1,        mlp_layers)
@@ -113,23 +124,30 @@ class BiddingNet(nn.Module):
         """
         auction_seq: (B, MAX_AUCTION_LEN) int64, -1 = padding
         direction:   (B,) int64
-        Returns:     (B, hidden) — final LSTM hidden state
+        Returns:     (B, hidden)
         """
-        dir_token = (_DIR_TOKEN_OFFSET + direction).unsqueeze(1)  # (B, 1)
+        dir_token = (_DIR_TOKEN_OFFSET + direction).unsqueeze(1)   # (B, 1)
+        tokens    = auction_seq.clone()
+        lengths   = (tokens != -1).sum(dim=1) + 1                  # +1 for dir token
+        tokens[tokens == -1] = _VOCAB_SIZE
+        tokens    = torch.cat([dir_token, tokens], dim=1)           # (B, 1+MAX_LEN)
+        embedded  = self.bid_emb(tokens)                            # (B, 1+MAX_LEN, E)
 
-        tokens = auction_seq.clone()
-        lengths = (tokens != -1).sum(dim=1) + 1   # +1 for direction token
-        lengths = lengths.cpu()
-
-        tokens[tokens == -1] = _VOCAB_SIZE         # padding_idx → zero emb
-        tokens = torch.cat([dir_token, tokens], dim=1)
-
-        embedded = self.bid_emb(tokens)            # (B, 1+MAX_LEN, embed_dim)
-        packed   = nn.utils.rnn.pack_padded_sequence(
-            embedded, lengths, batch_first=True, enforce_sorted=False
-        )
-        _, (h_n, _) = self.lstm(packed)
-        return h_n[-1]                             # top layer, (B, hidden)
+        if self._auction_enc_type == "transformer":
+            B, L, _ = embedded.shape
+            pos      = torch.arange(L, device=embedded.device).unsqueeze(0)
+            embedded = embedded + self.pos_emb(pos)
+            # True = ignore (padding positions)
+            pad_mask = torch.arange(L, device=embedded.device).unsqueeze(0) \
+                       >= lengths.to(embedded.device).unsqueeze(1)
+            out = self.transformer(embedded, src_key_padding_mask=pad_mask)
+            return self.auction_proj(out[:, 0])    # direction token = CLS
+        else:
+            packed = nn.utils.rnn.pack_padded_sequence(
+                embedded, lengths.cpu(), batch_first=True, enforce_sorted=False
+            )
+            _, (h_n, _) = self.lstm(packed)
+            return h_n[-1]
 
     def forward(self, hand: torch.Tensor, auction_seq: torch.Tensor,
                 direction: torch.Tensor,
@@ -153,6 +171,86 @@ class BiddingNet(nn.Module):
         log_probs = torch.log_softmax(logits, dim=-1)
         values    = self.value_head(combined)
         return log_probs, values
+
+
+class CentralizedCritic(nn.Module):
+    """
+    Centralized value function for CTDE (Centralized Training, Decentralized Execution).
+
+    Sees *both* North and South hands plus the full auction — information that
+    neither player has at the table. Used only during training to produce
+    lower-variance advantage estimates. Discarded at inference time.
+
+    Architecture:
+      north_hand (52,) ──► SuitAwareEncoder ──► north_emb ──┐
+      south_hand (52,) ──► SuitAwareEncoder ──► south_emb ──┼──► concat → MLP → V
+      auction_seq      ──► Embedding → LSTM  ──► auction_emb ┘
+
+    The hand encoder is shared between the two seats (same weights applied
+    independently), matching the inductive bias of the policy network.
+    """
+
+    def __init__(self, hidden: int = 128, embed_dim: int = 32,
+                 mlp_layers: int = 1, lstm_layers: int = 1,
+                 auction_encoder: str = "lstm"):
+        super().__init__()
+        self._auction_enc_type = auction_encoder
+        self.hand_enc = SuitAwareHandEncoder(hidden, embed_dim, mlp_layers)
+        self.bid_emb  = nn.Embedding(_VOCAB_SIZE + 1, embed_dim, padding_idx=_VOCAB_SIZE)
+
+        if auction_encoder == "transformer":
+            n_heads   = max(1, embed_dim // 8)
+            enc_layer = nn.TransformerEncoderLayer(
+                d_model=embed_dim, nhead=n_heads,
+                dim_feedforward=max(64, embed_dim * 4),
+                dropout=0.0, batch_first=True, norm_first=True,
+            )
+            self.transformer  = nn.TransformerEncoder(enc_layer, num_layers=lstm_layers)
+            self.pos_emb      = nn.Embedding(MAX_AUCTION_LEN + 1, embed_dim)
+            self.auction_proj = nn.Linear(embed_dim, hidden)
+        else:
+            self.lstm = nn.LSTM(embed_dim, hidden, num_layers=lstm_layers, batch_first=True)
+
+        self.value_head = _mlp(hidden * 3, hidden, 1, mlp_layers)
+
+    def _encode_auction(self, auction_seq: torch.Tensor) -> torch.Tensor:
+        tokens   = auction_seq.clone()
+        lengths  = (tokens != -1).sum(dim=1).clamp(min=1)
+        tokens[tokens == -1] = _VOCAB_SIZE
+        embedded = self.bid_emb(tokens)                             # (B, MAX_LEN, E)
+
+        if self._auction_enc_type == "transformer":
+            B, L, _ = embedded.shape
+            pos      = torch.arange(L, device=embedded.device).unsqueeze(0)
+            embedded = embedded + self.pos_emb(pos)
+            pad_mask = torch.arange(L, device=embedded.device).unsqueeze(0) \
+                       >= lengths.to(embedded.device).unsqueeze(1)
+            out      = self.transformer(embedded, src_key_padding_mask=pad_mask)
+            # Mean-pool over valid positions (no CLS token in the critic)
+            valid    = ~pad_mask                                     # (B, L) True=valid
+            pooled   = (out * valid.unsqueeze(-1)).sum(1) \
+                       / lengths.float().to(out.device).unsqueeze(1)
+            return self.auction_proj(pooled)
+        else:
+            packed = nn.utils.rnn.pack_padded_sequence(
+                embedded, lengths.cpu(), batch_first=True, enforce_sorted=False
+            )
+            _, (h_n, _) = self.lstm(packed)
+            return h_n[-1]
+
+    def forward(self, north_hands: torch.Tensor, south_hands: torch.Tensor,
+                auction_seqs: torch.Tensor) -> torch.Tensor:
+        """
+        north_hands:  (B, 52) float32
+        south_hands:  (B, 52) float32
+        auction_seqs: (B, MAX_AUCTION_LEN) int64  (-1 = padding)
+        Returns:      (B, 1) value estimates
+        """
+        north_emb   = self.hand_enc(north_hands)
+        south_emb   = self.hand_enc(south_hands)
+        auction_emb = self._encode_auction(auction_seqs)
+        combined    = torch.cat([north_emb, south_emb, auction_emb], dim=-1)
+        return self.value_head(combined)
 
 
 class NNAgent:
