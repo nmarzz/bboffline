@@ -508,25 +508,32 @@ def train(args):
 
         # ---- Logging ----
         if len(window_imps) >= 500 or episode >= args.episodes:
-            mean_imp     = float(np.mean(window_imps))
-            mean_par_imp = float(np.mean(window_pars))   # already in IMPs
+            mean_reward  = float(np.mean(window_imps))   # mode-dependent training signal
+            mean_par_imp = float(np.mean(window_pars))   # always IMP(par_score)
             elapsed      = time.time() - t0
             critic_loss_str = (f"  critic_loss={loss_stats['critic_loss']:.4f}"
                                if critic is not None else "")
-            print(f"ep={episode:7d}  mean_IMP={mean_imp:+.3f}  "
+            # Label the training reward clearly so it is not confused with
+            # eval/mean_imp (which is always absolute IMP regardless of mode).
+            reward_label = {
+                "expected_score":          "mean_IMP",
+                "optimal_contract_regret": "mean_regret",
+                "par_relative":            "mean_par_rel",
+            }.get(args.reward_mode, "mean_reward")
+            print(f"ep={episode:7d}  {reward_label}={mean_reward:+.3f}  "
                   f"mean_par_IMP={mean_par_imp:+.3f}  "
                   f"policy_loss={loss_stats['policy_loss']:.4f}  "
                   f"entropy={loss_stats['entropy']:.3f}"
                   f"{critic_loss_str}  elapsed={elapsed:.0f}s")
             with open(metrics_path, "a", newline="") as f:
-                csv.writer(f).writerow([episode, mean_imp, mean_par_imp,
+                csv.writer(f).writerow([episode, mean_reward, mean_par_imp,
                                         loss_stats["policy_loss"],
                                         loss_stats["value_loss"],
                                         loss_stats["entropy"],
                                         f"{elapsed:.1f}"])
             if wandb:
                 log_dict = {
-                    "train/mean_imp":     mean_imp,
+                    "train/mean_reward":  mean_reward,   # mode-dependent; use eval/mean_imp to compare runs
                     "train/mean_par_imp": mean_par_imp,
                     "train/policy_loss":  loss_stats["policy_loss"],
                     "train/value_loss":   loss_stats["value_loss"],

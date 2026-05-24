@@ -23,10 +23,10 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from training.train import build_parser, train
 
-# Checkpoints produced by the best expected_score run.
-# Update these paths if you save the baseline model elsewhere.
-_POLICY_CKPT = "checkpoints/net_final.pt"
-_CRITIC_CKPT = "checkpoints/critic_final.pt"
+# Fixed baseline checkpoints — these are never overwritten by subsequent runs.
+# Produced once from the best expected_score configuration (sweep 3).
+_POLICY_CKPT = "checkpoints/net_final_bestsweep.pt"
+_CRITIC_CKPT = "checkpoints/critic_final_bestsweep.pt"
 
 # Fixed across every trial — best settings from sweeps 1-3
 FIXED = dict(

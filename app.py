@@ -72,6 +72,10 @@ def _load_agent(model_name: str):
         state_dict = torch.load(str(path), map_location="cpu", weights_only=True)
         if not any(k.startswith("policy_head") for k in state_dict):
             raise HTTPException(400, f"'{model_name}' has no policy_head — not a BiddingNet checkpoint")
+        if "policy_head.weight" in state_dict:
+            raise HTTPException(400,
+                f"'{model_name}' uses a legacy single-Linear head format that is "
+                "no longer compatible with the current architecture")
         embed_dim  = state_dict["bid_emb.weight"].shape[1]
 
         # --- Hand encoder ---
@@ -211,6 +215,10 @@ _CRITIC_PREFIX = "critic_"   # CentralizedCritic checkpoints — not usable for 
 
 @app.get("/models")
 async def list_models():
+    # Name-based filter: excludes critic checkpoints without touching the files
+    # (important on network filesystems where scanning all files would be slow).
+    # Old-format policy nets (bare Linear heads) are still listed but _load_agent
+    # will reject them with a clear error if selected.
     names = sorted(
         p.stem for p in CHECKPOINTS_DIR.glob("*.pt")
         if not p.stem.startswith(_CRITIC_PREFIX)
