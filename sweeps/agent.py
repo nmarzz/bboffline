@@ -33,7 +33,7 @@ FIXED = dict(
     strain_bonus        = 0.0,
     ew_samples          = 10,
     wandb_project       = "bridge-bidding",
-    device              = "cpu",
+    device              = "auto",
     seed                = 42,
     # Fixed from sweep 1
     hidden              = 256,

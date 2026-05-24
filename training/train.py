@@ -374,7 +374,15 @@ def train(args):
     os.makedirs("logs",        exist_ok=True)
     os.makedirs("checkpoints", exist_ok=True)
 
-    device = args.device
+    if args.device == "auto":
+        if torch.cuda.is_available():
+            device = "cuda"
+        elif torch.backends.mps.is_available():
+            device = "mps"
+        else:
+            device = "cpu"
+    else:
+        device = args.device
     rng    = np.random.default_rng(args.seed)
 
     # ---- W&B ----
@@ -572,7 +580,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--entropy-final",  type=float, default=0.01)
     parser.add_argument("--vulnerability",  default="none",
                         choices=["none", "ns", "ew", "both"])
-    parser.add_argument("--device",         default="cpu")
+    parser.add_argument("--device",         default="auto",
+                        help="cpu | cuda | mps | auto (default: auto-detect)")
     parser.add_argument("--seed",           type=int,   default=42)
     parser.add_argument("--dataset",        default=None)
     parser.add_argument("--eval-dataset",   default=None)
