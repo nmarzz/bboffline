@@ -1,0 +1,39 @@
+program: sweeps/agent_regret.py
+method: bayes
+metric:
+  name: eval/mean_imp
+  goal: maximize
+
+# Kill clearly underperforming runs early
+early_terminate:
+  type: hyperband
+  min_iter: 30000
+  eta: 2
+
+# Fixed from sweeps 1-3: transformer, hidden=256, embed_dim=128,
+# gae_lambda=0.99, mlp_layers=1, lstm_layers=1, centralized_critic=True,
+# mini_batch_size=256, batch_episodes=1024.
+# warm_start=True is fixed: cold-start with regret is a known failure mode
+# (see DESIGN.md §3.2) and wastes sweep budget on a dead end.
+#
+# The real questions for regret fine-tuning are:
+#   1. lr           — too small → model doesn't move; too large → destabilises
+#   2. entropy_coef — must stay high enough that the policy keeps exploring
+#                     game/slam bids rather than collapsing back to part-scores
+#   3. strain_bonus — auxiliary signal to keep strain selection stable while
+#                     the regret gradient reshapes the level decisions
+
+parameters:
+  # --- Learning rate: fine-tuning range, well below the sweep-3 optimum ---
+  lr:
+    distribution: log_uniform_values
+    min: 0.00005
+    max: 0.0005
+
+  # --- Entropy: must be high enough to avoid policy collapse ---
+  entropy_coef:
+    values: [0.05, 0.1, 0.2]
+
+  # --- Strain bonus: auxiliary reward for bidding the correct strain ---
+  strain_bonus:
+    values: [0.0, 0.5, 1.0]

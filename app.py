@@ -64,30 +64,41 @@ def _load_agent(model_name: str):
     if model_name == "random":
         agent = RandomAgent()
     else:
+        if model_name.startswith(_CRITIC_PREFIX):
+            raise HTTPException(400, f"'{model_name}' is a centralized critic — not usable for inference")
         path = CHECKPOINTS_DIR / f"{model_name}.pt"
         if not path.exists():
             raise HTTPException(404, f"Checkpoint '{model_name}' not found")
-        state_dict  = torch.load(str(path), map_location="cpu", weights_only=True)
-        lstm_layers = sum(1 for k in state_dict if k.startswith("lstm.weight_ih_l"))
-        embed_dim   = state_dict["bid_emb.weight"].shape[1]
+        state_dict = torch.load(str(path), map_location="cpu", weights_only=True)
+        if not any(k.startswith("policy_head") for k in state_dict):
+            raise HTTPException(400, f"'{model_name}' has no policy_head — not a BiddingNet checkpoint")
+        embed_dim  = state_dict["bid_emb.weight"].shape[1]
 
+        # --- Hand encoder ---
         if "hand_enc.suit_linear.weight" in state_dict:
-            # SuitAwareHandEncoder: suit_linear maps (13 → embed_dim),
-            # agg MLP maps (4*embed_dim → hidden).
             hand_encoder = "suit"
             hidden     = state_dict["hand_enc.agg.0.weight"].shape[0]
             mlp_layers = sum(1 for k in state_dict
                              if k.startswith("hand_enc.agg.") and k.endswith(".weight")) - 1
         else:
-            # Flat MLP encoder: first Linear maps (52 → hidden).
             hand_encoder = "mlp"
             hidden     = state_dict["hand_enc.0.weight"].shape[0]
             mlp_layers = sum(1 for k in state_dict
                              if k.startswith("hand_enc.") and k.endswith(".weight")) - 1
 
+        # --- Auction encoder ---
+        if any(k.startswith("transformer.") for k in state_dict):
+            auction_encoder = "transformer"
+            lstm_layers = sum(1 for k in state_dict
+                              if k.startswith("transformer.layers.")
+                              and k.endswith("self_attn.in_proj_weight"))
+        else:
+            auction_encoder = "lstm"
+            lstm_layers = sum(1 for k in state_dict if k.startswith("lstm.weight_ih_l"))
+
         net = BiddingNet(hidden=hidden, embed_dim=embed_dim,
                          mlp_layers=mlp_layers, lstm_layers=lstm_layers,
-                         hand_encoder=hand_encoder)
+                         hand_encoder=hand_encoder, auction_encoder=auction_encoder)
         net.load_state_dict(state_dict)
         net.eval()
         agent = NNAgent(net)
@@ -195,9 +206,15 @@ class SuggestRequest(BaseModel):
 # ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
+_CRITIC_PREFIX = "critic_"   # CentralizedCritic checkpoints — not usable for inference
+
+
 @app.get("/models")
 async def list_models():
-    names = sorted(p.stem for p in CHECKPOINTS_DIR.glob("*.pt"))
+    names = sorted(
+        p.stem for p in CHECKPOINTS_DIR.glob("*.pt")
+        if not p.stem.startswith(_CRITIC_PREFIX)
+    )
     return {"models": ["random"] + names}
 
 
