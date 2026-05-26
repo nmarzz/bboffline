@@ -464,14 +464,29 @@ def train(args):
                                  "elapsed_s"])
 
     episode     = 0
+    epoch       = 0
     window_imps = []
     window_pars = []
     t0          = time.time()
 
+    # Epoch-based iterator: shuffle the full dataset, yield batches in order,
+    # re-shuffle at the start of each new epoch.  More sample-efficient than
+    # random sampling with replacement (every deal seen once per epoch).
+    def _epoch_batches(n: int, batch: int):
+        nonlocal epoch
+        while True:
+            perm = rng.permutation(n)
+            epoch += 1
+            for start in range(0, n, batch):
+                yield perm[start: start + batch]
+
+    batch_iter = _epoch_batches(dataset.n_deals, args.batch_episodes) \
+                 if dataset is not None else None
+
     while episode < args.episodes:
         # ---- Collect rollout ----
         if dataset is not None:
-            indices             = dataset.sample_indices(args.batch_episodes, rng)
+            indices             = next(batch_iter)
             ns_hands, dds_tbls  = dataset.get(indices)
             ew_counts           = dataset.get_ew_counts(indices)
             flat_trans, exp_imps, exp_pars = collect_batch_vectorized(
@@ -520,7 +535,8 @@ def train(args):
                 "optimal_contract_regret": "mean_regret",
                 "par_relative":            "mean_par_rel",
             }.get(args.reward_mode, "mean_reward")
-            print(f"ep={episode:7d}  {reward_label}={mean_reward:+.3f}  "
+            epoch_str = f"  epoch={epoch}" if dataset is not None else ""
+            print(f"ep={episode:7d}{epoch_str}  {reward_label}={mean_reward:+.3f}  "
                   f"mean_par_IMP={mean_par_imp:+.3f}  "
                   f"policy_loss={loss_stats['policy_loss']:.4f}  "
                   f"entropy={loss_stats['entropy']:.3f}"
@@ -539,6 +555,7 @@ def train(args):
                     "train/value_loss":   loss_stats["value_loss"],
                     "train/entropy":      loss_stats["entropy"],
                     "train/lr":           updater._lr,
+                    "train/epoch":        epoch,
                 }
                 if critic is not None:
                     log_dict["train/critic_loss"] = loss_stats["critic_loss"]
