@@ -572,7 +572,18 @@ def train(args):
     torch.save(net.state_dict(), "checkpoints/net_final.pt")
     if critic is not None:
         torch.save(critic.state_dict(), "checkpoints/critic_final.pt")
+
+    # Save a permanent, run-named copy so net_final.pt can be overwritten
+    # by subsequent runs without losing this checkpoint.
     if wandb:
+        run_name = wandb.run.name          # e.g. "blooming-sweep-15"
+        named_ckpt = f"checkpoints/net_final_{run_name}.pt"
+        torch.save(net.state_dict(), named_ckpt)
+        print(f"  saved named checkpoint → {named_ckpt}")
+        if critic is not None:
+            named_critic = f"checkpoints/critic_final_{run_name}.pt"
+            torch.save(critic.state_dict(), named_critic)
+            print(f"  saved named checkpoint → {named_critic}")
         wandb.finish()
     print("Training complete.")
 
@@ -586,10 +597,13 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.ArgumentDefaultsHelpFormatter
     )
     # Training dynamics
+    # Defaults reflect the best configuration found across sweeps 1-3:
+    #   hidden=256, embed_dim=128, transformer encoder, gae_lambda=0.99   (sweeps 1-2)
+    #   lr=9e-4, batch_episodes=1024, entropy_coef=0.05, mini_batch_size=256  (sweep 3)
     parser.add_argument("--episodes",       type=int,   default=200_000)
-    parser.add_argument("--batch-episodes", type=int,   default=512)
+    parser.add_argument("--batch-episodes", type=int,   default=1_024)
     parser.add_argument("--ew-samples",     type=int,   default=10)
-    parser.add_argument("--lr",             type=float, default=3e-4)
+    parser.add_argument("--lr",             type=float, default=9e-4)
     parser.add_argument("--reward-mode",    default="expected_score",
                         choices=["expected_score", "optimal_contract_regret", "par_relative"])
     parser.add_argument("--strain-bonus",   type=float, default=0.0)
@@ -604,16 +618,17 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--eval-dataset",   default=None)
     parser.add_argument("--eval-interval",  type=int,   default=10_000)
     parser.add_argument("--wandb-project",      default=None)
-    parser.add_argument("--centralized-critic", action="store_true")
-    parser.add_argument("--critic-lr",          type=float, default=3e-4)
+    parser.add_argument("--centralized-critic",
+                        action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--critic-lr",          type=float, default=9e-4)
     # Network architecture
-    parser.add_argument("--hidden",       type=int, default=128)
-    parser.add_argument("--embed-dim",    type=int, default=32)
+    parser.add_argument("--hidden",       type=int, default=256)
+    parser.add_argument("--embed-dim",    type=int, default=128)
     parser.add_argument("--mlp-layers",   type=int, default=1)
     parser.add_argument("--lstm-layers",  type=int, default=1)
     parser.add_argument("--hand-encoder",    default="suit", choices=["suit", "mlp"])
-    parser.add_argument("--auction-encoder", default="lstm", choices=["lstm", "transformer"])
-    parser.add_argument("--gae-lambda",      type=float, default=0.95)
+    parser.add_argument("--auction-encoder", default="transformer", choices=["lstm", "transformer"])
+    parser.add_argument("--gae-lambda",      type=float, default=0.99)
     parser.add_argument("--mini-batch-size",    type=int,   default=256)
     # Warm-start: load pre-trained weights before training begins
     parser.add_argument("--checkpoint",         default=None,
