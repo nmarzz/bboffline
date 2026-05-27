@@ -1,0 +1,33 @@
+program: sweeps/agent_warmstart.py
+method: bayes
+metric:
+  name: eval/mean_imp
+  goal: maximize
+
+early_terminate:
+  type: hyperband
+  min_iter: 30000
+  eta: 2
+
+# All runs warm-start from checkpoints/net_final_bestsweep.pt (2.14 IMP).
+# reward_mode=expected_score, architecture fixed from sweeps 1-3.
+#
+# We are looking for what pushes the model past its current plateau.
+# Key axes:
+#   lr          — fine-tuning wants lower than the sweep-3 range
+#   entropy_coef — lower entropy to exploit the learned policy,
+#                  but not so low the model collapses
+#   batch_episodes — larger batches may give more stable gradient
+#                    signal near the optimum
+
+parameters:
+  lr:
+    distribution: log_uniform_values
+    min: 0.00005
+    max: 0.0005
+
+  entropy_coef:
+    values: [0.005, 0.01, 0.03, 0.05]
+
+  batch_episodes:
+    values: [512, 1024, 2048]
