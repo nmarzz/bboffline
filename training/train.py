@@ -469,13 +469,25 @@ def train(args):
     window_pars = []
     t0          = time.time()
 
+    # ---- Curriculum weights (optional) ----
+    curriculum_weights = None
+    if dataset is not None and args.curriculum_weights:
+        curriculum_weights = np.load(args.curriculum_weights).astype(np.float64)
+        curriculum_weights /= curriculum_weights.sum()   # ensure normalised
+        print(f"Curriculum weights loaded from {args.curriculum_weights}")
+
     # Epoch-based iterator: shuffle the full dataset, yield batches in order,
     # re-shuffle at the start of each new epoch.  More sample-efficient than
     # random sampling with replacement (every deal seen once per epoch).
+    # With curriculum_weights: weighted sampling with replacement so game/slam
+    # hands appear more often per epoch.
     def _epoch_batches(n: int, batch: int):
         nonlocal epoch
         while True:
-            perm = rng.permutation(n)
+            if curriculum_weights is not None:
+                perm = rng.choice(n, size=n, replace=True, p=curriculum_weights)
+            else:
+                perm = rng.permutation(n)
             epoch += 1
             for start in range(0, n, batch):
                 yield perm[start: start + batch]
@@ -652,6 +664,9 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Path to a policy net .pt file to warm-start from.")
     parser.add_argument("--critic-checkpoint",  default=None,
                         help="Path to a critic net .pt file to warm-start from.")
+    # Curriculum: weighted sampling to oversample game/slam hands
+    parser.add_argument("--curriculum-weights", default=None,
+                        help="Path to curriculum_weights.npy (from scripts/make_curriculum_weights.py).")
     return parser
 
 

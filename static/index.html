@@ -69,38 +69,41 @@ select {
 }
 .toggle-group .btn.active { background: #ffd700; color: #1a1a1a; font-weight: bold; }
 
-/* Compass */
+/* Compass — three equal columns, all hands the same width */
 .compass {
   display: grid;
-  grid-template-areas: ". north ." "west center east" ". south .";
-  grid-template-columns: 1fr 200px 1fr;
+  grid-template-areas:
+    ".    north  ."
+    "west center east"
+    ".    south  .";
+  grid-template-columns: repeat(3, 180px);
   grid-template-rows: auto auto auto;
-  gap: 8px;
-  max-width: 720px;
+  gap: 10px;
   margin: 0 auto 14px;
-  align-items: center;
+  width: fit-content;
 }
-.north  { grid-area: north; justify-self: center; }
-.west   { grid-area: west; justify-self: end; }
+.north  { grid-area: north;  }
+.west   { grid-area: west;   }
 .center { grid-area: center; }
-.east   { grid-area: east; justify-self: start; }
-.south  { grid-area: south; justify-self: center; }
+.east   { grid-area: east;   }
+.south  { grid-area: south;  }
+
+/* Every element in the compass fills its 180px cell */
+.compass > * { width: 100%; }
 
 .hand-box {
   background: #fffef5;
   color: #111;
   border-radius: 8px;
-  padding: 10px 14px;
-  font-size: 0.92rem;
-  line-height: 1.75;
-  min-width: 130px;
+  padding: 10px 12px;
+  font-size: 0.9rem;
+  line-height: 1.8;
 }
 .hand-box.hidden {
   background: #123d1c;
   border: 2px dashed #3a7a45;
   color: #5a9a65;
-  min-width: 100px;
-  min-height: 90px;
+  min-height: 100px;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -108,38 +111,38 @@ select {
   gap: 6px;
 }
 .hand-label {
-  font-size: 0.68rem;
+  font-size: 0.65rem;
   font-weight: bold;
   text-transform: uppercase;
   letter-spacing: 1px;
-  color: #888;
-  margin-bottom: 4px;
+  color: #999;
+  margin-bottom: 3px;
 }
 .hand-box.hidden .hand-label { color: #3a7a45; }
-.suit-row { white-space: nowrap; font-family: 'Courier New', monospace; }
-.suit-row .sym { margin-right: 4px; }
+.suit-row { white-space: nowrap; font-family: 'Courier New', monospace; font-size: 0.88rem; }
+.suit-row .sym { margin-right: 3px; }
 .red   { color: #c00; }
 .black { color: #111; }
 
-/* Center info box */
+/* Center info box — same 180px width, full height of middle row */
 .center-box {
   background: #0d4017;
   border: 1px solid #2a6a30;
   border-radius: 8px;
-  padding: 12px;
+  padding: 10px 8px;
   text-align: center;
-  min-height: 90px;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
   gap: 4px;
+  height: 100%;
 }
 .vuln-badge {
   display: inline-block;
-  padding: 2px 8px;
+  padding: 2px 7px;
   border-radius: 4px;
-  font-size: 0.72rem;
+  font-size: 0.68rem;
   font-weight: bold;
   letter-spacing: 0.5px;
   margin-bottom: 2px;
@@ -148,9 +151,9 @@ select {
 .vul-ns   { background: #b02020; }
 .vul-ew   { background: #1a48aa; }
 .vul-both { background: #b02020; outline: 2px solid #1a48aa; }
-.par-label { font-size: 0.7rem; color: #7aaa80; text-transform: uppercase; letter-spacing: 0.5px; }
-.par-contract { font-size: 1.05rem; font-weight: bold; color: #ffd700; }
-.par-score { font-size: 0.9rem; color: #aaa; }
+.par-label { font-size: 0.65rem; color: #7aaa80; text-transform: uppercase; letter-spacing: 0.5px; }
+.par-contract { font-size: 1rem; font-weight: bold; color: #ffd700; }
+.par-score { font-size: 0.85rem; color: #aaa; }
 
 /* DD table */
 .dd-section {
@@ -380,6 +383,88 @@ select {
   font-size: 1rem;
 }
 .welcome .big { font-size: 3rem; margin-bottom: 12px; }
+
+/* ── Manual deal modal ─────────────────────────────────────────────────── */
+.modal-overlay {
+  display: none;
+  position: fixed; inset: 0;
+  background: rgba(0,0,0,0.65);
+  z-index: 100;
+  align-items: center;
+  justify-content: center;
+}
+.modal-overlay.open { display: flex; }
+
+.modal-box {
+  background: #0f3d18;
+  border: 1px solid #3a8a4a;
+  border-radius: 10px;
+  padding: 22px 26px 18px;
+  width: min(560px, 96vw);
+  color: #eee;
+}
+.modal-title {
+  font-size: 1.1rem;
+  font-weight: bold;
+  color: #ffd700;
+  margin-bottom: 16px;
+  letter-spacing: 1px;
+}
+.deal-grid {
+  display: grid;
+  grid-template-columns: 56px 1fr 1fr 1fr 1fr 40px;
+  gap: 6px 8px;
+  align-items: center;
+  margin-bottom: 16px;
+}
+.deal-grid .col-head {
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: #9cba9e;
+  text-align: center;
+}
+.deal-grid .dir-label {
+  font-size: 0.8rem;
+  font-weight: bold;
+  color: #ffd700;
+}
+.deal-grid input[type=text] {
+  width: 100%;
+  padding: 5px 6px;
+  border-radius: 5px;
+  border: 1px solid #3a8a4a;
+  background: #07250e;
+  color: #eee;
+  font-family: 'Courier New', monospace;
+  font-size: 0.85rem;
+  text-transform: uppercase;
+}
+.deal-grid input[type=text]:focus { outline: 1px solid #ffd700; }
+.deal-card-count {
+  font-size: 0.75rem;
+  text-align: center;
+  font-family: monospace;
+}
+.deal-card-count.ok  { color: #4caf50; }
+.deal-card-count.bad { color: #f44; }
+
+.modal-hint {
+  font-size: 0.72rem;
+  color: #5a9a65;
+  margin-bottom: 14px;
+}
+.modal-error {
+  color: #f66;
+  font-size: 0.8rem;
+  min-height: 1.2em;
+  margin-bottom: 10px;
+}
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
 </style>
 </head>
 <body>
@@ -409,6 +494,10 @@ select {
   <div class="ctrl-group">
     <span class="ctrl-label">&nbsp;</span>
     <button class="btn btn-primary" id="btn-new-deal" onclick="newDeal()">New Deal</button>
+  </div>
+  <div class="ctrl-group">
+    <span class="ctrl-label">&nbsp;</span>
+    <button class="btn btn-secondary" onclick="openManualModal()">Enter Deal</button>
   </div>
 </div>
 
@@ -721,14 +810,15 @@ function renderParAnalysis(data) {
 // ---------------------------------------------------------------------------
 // Render: hands
 // ---------------------------------------------------------------------------
+const DIR_CLASS = {N:'north', E:'east', S:'south', W:'west'};
 function renderHands() {
   ['N','E','S','W'].forEach(d => {
     const box = document.getElementById('hand-' + d);
     if (st.viewMode === 'god' || d === 'N') {
-      box.className = 'hand-box ' + d.toLowerCase();
+      box.className = 'hand-box ' + DIR_CLASS[d];
       box.innerHTML = `<div class="hand-label">${DIR_FULL[d]}</div>${buildHandHTML(st.hands[d])}`;
     } else {
-      box.className = 'hand-box hidden ' + d.toLowerCase();
+      box.className = 'hand-box hidden ' + DIR_CLASS[d];
       box.innerHTML = `<div class="hand-label">${DIR_FULL[d]}</div><div style="font-size:1.6rem">&#127136;</div>`;
     }
   });
@@ -883,6 +973,157 @@ function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
 // ---------------------------------------------------------------------------
 init();
+</script>
+
+<!-- Manual deal entry modal -->
+<div class="modal-overlay" id="modal-manual" onclick="if(event.target===this)closeManualModal()">
+  <div class="modal-box">
+    <div class="modal-title">&#9827; Enter Deal</div>
+    <p class="modal-hint">Enter rank characters for each suit (A K Q J T 9 8 7 6 5 4 3 2). Spaces optional.</p>
+    <div class="deal-grid" id="deal-grid">
+      <!-- header row -->
+      <div class="col-head"></div>
+      <div class="col-head" style="color:#111">&#9824;</div>
+      <div class="col-head" style="color:#c00">&#9829;</div>
+      <div class="col-head" style="color:#c00">&#9830;</div>
+      <div class="col-head" style="color:#111">&#9827;</div>
+      <div class="col-head">#</div>
+      <!-- N row -->
+      <div class="dir-label">North</div>
+      <input type="text" id="m-N-S" placeholder="e.g. AKQ" oninput="updateManualCount('N')">
+      <input type="text" id="m-N-H" placeholder="" oninput="updateManualCount('N')">
+      <input type="text" id="m-N-D" placeholder="" oninput="updateManualCount('N')">
+      <input type="text" id="m-N-C" placeholder="" oninput="updateManualCount('N')">
+      <div class="deal-card-count" id="mc-N">0</div>
+      <!-- E row -->
+      <div class="dir-label">East</div>
+      <input type="text" id="m-E-S" placeholder="" oninput="updateManualCount('E')">
+      <input type="text" id="m-E-H" placeholder="" oninput="updateManualCount('E')">
+      <input type="text" id="m-E-D" placeholder="" oninput="updateManualCount('E')">
+      <input type="text" id="m-E-C" placeholder="" oninput="updateManualCount('E')">
+      <div class="deal-card-count" id="mc-E">0</div>
+      <!-- S row -->
+      <div class="dir-label">South</div>
+      <input type="text" id="m-S-S" placeholder="" oninput="updateManualCount('S')">
+      <input type="text" id="m-S-H" placeholder="" oninput="updateManualCount('S')">
+      <input type="text" id="m-S-D" placeholder="" oninput="updateManualCount('S')">
+      <input type="text" id="m-S-C" placeholder="" oninput="updateManualCount('S')">
+      <div class="deal-card-count" id="mc-S">0</div>
+      <!-- W row -->
+      <div class="dir-label">West</div>
+      <input type="text" id="m-W-S" placeholder="" oninput="updateManualCount('W')">
+      <input type="text" id="m-W-H" placeholder="" oninput="updateManualCount('W')">
+      <input type="text" id="m-W-D" placeholder="" oninput="updateManualCount('W')">
+      <input type="text" id="m-W-C" placeholder="" oninput="updateManualCount('W')">
+      <div class="deal-card-count" id="mc-W">0</div>
+    </div>
+    <div class="modal-error" id="modal-error"></div>
+    <div class="modal-actions">
+      <button class="btn btn-secondary" onclick="closeManualModal()">Cancel</button>
+      <button class="btn btn-primary" onclick="submitManualDeal()">Load Deal</button>
+    </div>
+  </div>
+</div>
+
+<script>
+// ---------------------------------------------------------------------------
+// Manual deal modal
+// ---------------------------------------------------------------------------
+const RANKS_VALID = new Set('AKQJT98765432');
+
+function openManualModal() {
+  document.getElementById('modal-error').textContent = '';
+  document.getElementById('modal-manual').classList.add('open');
+  document.getElementById('m-N-S').focus();
+}
+
+function closeManualModal() {
+  document.getElementById('modal-manual').classList.remove('open');
+}
+
+function countCards(dir) {
+  return ['S','H','D','C'].reduce((n, suit) => {
+    const v = document.getElementById(`m-${dir}-${suit}`).value.toUpperCase().replace(/\s/g,'');
+    return n + [...v].filter(c => RANKS_VALID.has(c)).length;
+  }, 0);
+}
+
+function updateManualCount(dir) {
+  const n   = countCards(dir);
+  const el  = document.getElementById(`mc-${dir}`);
+  el.textContent = n;
+  el.className   = 'deal-card-count ' + (n === 13 ? 'ok' : 'bad');
+}
+
+async function submitManualDeal() {
+  document.getElementById('modal-error').textContent = '';
+
+  const model = document.getElementById('sel-model').value;
+  const vuln  = document.getElementById('sel-vuln').value;
+
+  // Build hands payload
+  const hands = {};
+  for (const dir of ['N','E','S','W']) {
+    hands[dir] = {};
+    for (const suit of ['S','H','D','C']) {
+      hands[dir][suit] = document.getElementById(`m-${dir}-${suit}`)
+                           .value.toUpperCase().replace(/\s/g,'');
+    }
+    const n = countCards(dir);
+    if (n !== 13) {
+      document.getElementById('modal-error').textContent =
+        `${DIR_FULL[dir]} has ${n} card${n===1?'':'s'} — need exactly 13.`;
+      return;
+    }
+  }
+
+  setBusy(true);
+  try {
+    const res = await fetch('/deal/manual', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({model, vulnerability: vuln, hands}),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({detail: 'Unknown error'}));
+      document.getElementById('modal-error').textContent = err.detail || 'Error loading deal.';
+      return;
+    }
+    const data = await res.json();
+
+    closeManualModal();
+
+    // Same state update as newDeal()
+    st.dealId      = data.deal_id;
+    st.bids        = [];
+    st.hands       = data.hands;
+    st.parScore    = data.par_score;
+    st.parContract = data.par_contract;
+    st.vuln        = data.vulnerability;
+    st.isComplete  = false;
+
+    document.getElementById('welcome').style.display = 'none';
+    document.getElementById('compass').style.display = '';
+    document.getElementById('par-analysis-section').style.display = '';
+    document.getElementById('par-analysis-result').innerHTML = '';
+    document.getElementById('btn-analyse').disabled = false;
+    document.getElementById('btn-analyse').textContent = 'Analyse';
+    document.getElementById('auction-section').style.display = '';
+    document.getElementById('result-area').style.display = 'none';
+    document.getElementById('suggestion-area').innerHTML = '';
+
+    renderHands();
+    renderCenterInfo();
+    renderDDTable(data.dd_table);
+    document.getElementById('dd-section').style.display = st.viewMode === 'god' ? '' : 'none';
+    resetAuctionTable();
+    await fetchSuggestion();
+  } catch (e) {
+    document.getElementById('modal-error').textContent = 'Error: ' + e.message;
+  } finally {
+    setBusy(false);
+  }
+}
 </script>
 </body>
 </html>

@@ -16,11 +16,11 @@ sys.path.insert(0, str(Path(__file__).parent))
 from agents.nn_agent import BiddingNet, NNAgent
 from agents.random_agent import RandomAgent
 from environment.auction import AuctionState, MAX_AUCTION_LEN, NUM_BIDS, bid_name
-from environment.deal import BridgeDeal, random_deal, resample_ew
+from environment.deal import BridgeDeal, random_deal, resample_ew, hand_to_vector
 from environment.scoring import achieved_ns_score, imps, _calc_all_tables_chunked
 
 import endplay.dds as dds
-from endplay.types import Contract, Denom, Penalty, Player, Vul
+from endplay.types import Contract, Deal, Denom, Penalty, Player, Vul
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -29,6 +29,8 @@ CHECKPOINTS_DIR = Path(__file__).parent / "checkpoints"
 STATIC_DIR = Path(__file__).parent / "static"
 
 _RANK_NAMES = ["2", "3", "4", "5", "6", "7", "8", "9", "T", "J", "Q", "K", "A"]
+_RANK_CHAR_TO_IDX = {r: i for i, r in enumerate(_RANK_NAMES)}   # "2"→0 … "A"→12
+_RANK_ORDER_HIGH  = list(reversed(_RANK_NAMES))                  # A K Q … 2
 _SUIT_KEYS = ["S", "H", "D", "C"]          # suit_idx 0-3 in deal.py
 _DIR_NAMES = ["N", "E", "S", "W"]
 _DENOM_NAMES = ["C", "D", "H", "S", "NT"]  # matches auction.py denom indices
@@ -195,6 +197,47 @@ def _suggest_bid(agent, hand_vec: np.ndarray, auction: AuctionState, top_k: int 
 
 
 # ---------------------------------------------------------------------------
+# Manual deal helpers
+# ---------------------------------------------------------------------------
+
+def _parse_hand_input(suit_dict: dict) -> np.ndarray:
+    """Parse {S:str, H:str, D:str, C:str} card strings into a 52-dim binary vector.
+
+    Rank characters: A K Q J T 9 8 7 6 5 4 3 2 (case-insensitive, spaces ignored).
+    Suit order in vector: s_idx 0=S, 1=H, 2=D, 3=C (matches _SUIT_KEYS / hand_to_vector).
+    """
+    vec = np.zeros(52, dtype=np.float32)
+    for s_idx, suit in enumerate(_SUIT_KEYS):
+        ranks_str = suit_dict.get(suit, "").upper().replace(" ", "")
+        for ch in ranks_str:
+            if ch not in _RANK_CHAR_TO_IDX:
+                raise ValueError(f"Unknown rank character '{ch}' in suit {suit}")
+            bit = s_idx * 13 + _RANK_CHAR_TO_IDX[ch]
+            if vec[bit]:
+                raise ValueError(f"Duplicate card {ch}{suit}")
+            vec[bit] = 1.0
+    return vec
+
+
+def _vec_to_pbn_hand(vec: np.ndarray) -> str:
+    """52-dim binary vector → PBN hand string 'S.H.D.C' (ranks high→low)."""
+    suits = []
+    for s_idx in range(4):          # 0=S, 1=H, 2=D, 3=C
+        suits.append("".join(
+            r for r in _RANK_ORDER_HIGH
+            if vec[s_idx * 13 + _RANK_CHAR_TO_IDX[r]]
+        ))
+    return ".".join(suits)
+
+
+def _build_ep_deal(hand_vecs: np.ndarray) -> Deal:
+    """Build an endplay Deal from (4, 52) hand vectors (N, E, S, W order)."""
+    # PBN format: "N:N_hand E_hand S_hand W_hand"
+    pbn = "N:" + " ".join(_vec_to_pbn_hand(hand_vecs[i]) for i in range(4))
+    return Deal(pbn)
+
+
+# ---------------------------------------------------------------------------
 # Request/Response schemas
 # ---------------------------------------------------------------------------
 class DealRequest(BaseModel):
@@ -205,6 +248,13 @@ class DealRequest(BaseModel):
 class SuggestRequest(BaseModel):
     deal_id: str
     bids: List[int] = []
+
+
+class ManualDealRequest(BaseModel):
+    model: str = "net_final"
+    vulnerability: str = "none"
+    # {N: {S: "AKQ", H: "JT", D: "98765", C: "432"}, E: ..., S: ..., W: ...}
+    hands: dict
 
 
 # ---------------------------------------------------------------------------
@@ -255,6 +305,75 @@ async def new_deal(req: DealRequest):
         "par_score": par_score,
         "par_contract": par_contract,
         "dd_table": dd_dict,
+    }
+
+
+@app.post("/deal/manual")
+async def manual_deal(req: ManualDealRequest):
+    """Load a user-specified deal.
+
+    Expects ``hands`` = {N: {S:str, H:str, D:str, C:str}, E:…, S:…, W:…}.
+    Ranks are A K Q J T 9 8 7 6 5 4 3 2 (case-insensitive, spaces optional).
+    Returns the same shape as POST /deal.
+    """
+    if req.vulnerability not in _VUL:
+        raise HTTPException(400, "Invalid vulnerability")
+
+    dirs = ["N", "E", "S", "W"]
+    if not all(d in req.hands for d in dirs):
+        raise HTTPException(400, "Must provide hands for N, E, S, and W")
+
+    # Parse and validate individual hands
+    hand_vecs = []
+    for d in dirs:
+        try:
+            vec = _parse_hand_input(req.hands[d])
+        except ValueError as exc:
+            raise HTTPException(400, f"Hand {d}: {exc}") from exc
+        n = int(vec.sum())
+        if n != 13:
+            raise HTTPException(400, f"Hand {d} has {n} cards (need 13)")
+        hand_vecs.append(vec)
+
+    # Check the 52 cards are covered exactly once
+    total = np.stack(hand_vecs).sum(axis=0)
+    if not np.all(total == 1):
+        dupes = [
+            f"{_RANK_NAMES[i % 13]}{_SUIT_KEYS[i // 13]}"
+            for i in np.where(total != 1)[0]
+        ]
+        raise HTTPException(400, f"Duplicate or missing cards: {', '.join(dupes)}")
+
+    hands_np = np.stack(hand_vecs)   # (4, 52)
+    ep_deal  = _build_ep_deal(hands_np)
+
+    # Re-derive hand vectors from endplay to ensure consistency with hand_to_vector
+    hands_np = np.stack([hand_to_vector(ep_deal[p]) for p in _ENDPLAY_PLAYERS])
+    deal = BridgeDeal(endplay_deal=ep_deal, hands=hands_np, vulnerability=req.vulnerability)
+
+    raw_tables = dds.calc_all_tables([ep_deal])
+    raw_table  = raw_tables[0]
+
+    dd_dict = _build_dd_dict(raw_table)
+    par_score, par_contract = _best_ns_contract(raw_table, req.vulnerability)
+    hands_out = {_DIR_NAMES[i]: _hand_to_cards(hands_np[i]) for i in range(4)}
+
+    deal_id = str(uuid.uuid4())
+    _deal_cache[deal_id] = {
+        "deal": deal,
+        "raw_table": raw_table,
+        "model": req.model,
+        "vulnerability": req.vulnerability,
+    }
+    _load_agent(req.model)
+
+    return {
+        "deal_id":      deal_id,
+        "vulnerability": req.vulnerability,
+        "hands":        hands_out,
+        "par_score":    par_score,
+        "par_contract": par_contract,
+        "dd_table":     dd_dict,
     }
 
 
