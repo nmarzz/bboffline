@@ -96,7 +96,7 @@ def greedy_rollout(net, eval_ds, device, batch_size=512):
                     bm[k, b] = True
 
             with torch.no_grad():
-                lp, _ = net(torch.from_numpy(bh).to(device),
+                lp, _, _ = net(torch.from_numpy(bh).to(device),
                             torch.from_numpy(bs).to(device),
                             torch.from_numpy(bd).to(device),
                             torch.from_numpy(bm).to(device))

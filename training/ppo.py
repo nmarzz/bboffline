@@ -93,6 +93,7 @@ class PPOUpdater:
         critic_lr: float = 3e-4,
         gae_lambda: float = 0.95,
         mini_batch_size: int = 256,
+        aux_coef: float = 0.0,
     ):
         self.net             = net
         self.clip_eps        = clip_eps
@@ -103,6 +104,7 @@ class PPOUpdater:
         self.critic          = critic
         self.gae_lambda      = gae_lambda
         self.mini_batch_size = mini_batch_size
+        self.aux_coef        = aux_coef
         self.optimizer       = torch.optim.Adam(net.parameters(), lr=lr)
         self._lr             = lr
         self.critic_optimizer = (
@@ -133,6 +135,9 @@ class PPOUpdater:
         ns_arr    = np.stack([t.ns_hands for t in transitions])        # (T, 2, 52)
         slots     = np.array([0 if t.direction == 0 else 1 for t in transitions])
         act_hands = ns_arr[np.arange(T), slots]                        # (T, 52)
+        # Partner hand: opposite slot (North's partner is South, and vice versa)
+        par_slots    = 1 - slots
+        partner_hands_np = ns_arr[np.arange(T), par_slots]             # (T, 52)
 
         hands    = torch.tensor(act_hands, dtype=torch.float32, device=self.device)
         auctions = torch.tensor(np.stack([t.auction_seq for t in transitions]),
@@ -148,12 +153,14 @@ class PPOUpdater:
         rets     = torch.tensor(returns,    dtype=torch.float32, device=self.device)
         advs     = torch.tensor(advantages, dtype=torch.float32, device=self.device)
         advs     = (advs - advs.mean()) / (advs.std() + 1e-8)
+        partner_hands = torch.tensor(partner_hands_np, dtype=torch.float32, device=self.device)
 
         if self.critic is not None:
             north_hands = torch.tensor(ns_arr[:, 0], dtype=torch.float32, device=self.device)
             south_hands = torch.tensor(ns_arr[:, 1], dtype=torch.float32, device=self.device)
 
-        stats = {"policy_loss": [], "value_loss": [], "entropy": [], "critic_loss": []}
+        stats = {"policy_loss": [], "value_loss": [], "entropy": [],
+                 "critic_loss": [], "aux_loss": []}
 
         for _ in range(self.n_epochs):
             perm = torch.randperm(T, device=self.device)
@@ -161,7 +168,7 @@ class PPOUpdater:
             for start in range(0, T, self.mini_batch_size):
                 mb = perm[start : start + self.mini_batch_size]
 
-                log_probs, values = self.net(
+                log_probs, values, partner_pred = self.net(
                     hands[mb], auctions[mb], dirs[mb], masks[mb]
                 )
                 values = values.squeeze(-1)
@@ -180,7 +187,21 @@ class PPOUpdater:
                 probs   = torch.exp(log_probs)
                 entropy = -(probs * log_probs).nan_to_num(0.0).sum(dim=-1).mean()
 
-                loss = policy_loss + self.value_coef * value_loss - self.entropy_coef * entropy
+                # --- Auxiliary BCE loss: predict partner's hand from auction ---
+                # partner_pred contains raw logits (before sigmoid) for numerical stability.
+                aux_loss_val = 0.0
+                if partner_pred is not None and self.aux_coef > 0.0:
+                    aux_loss = nn.functional.binary_cross_entropy_with_logits(
+                        partner_pred, partner_hands[mb], reduction="mean"
+                    )
+                    aux_loss_val = aux_loss.item()
+                else:
+                    aux_loss = torch.tensor(0.0, device=self.device)
+
+                loss = (policy_loss
+                        + self.value_coef * value_loss
+                        - self.entropy_coef * entropy
+                        + self.aux_coef * aux_loss)
                 self.optimizer.zero_grad()
                 loss.backward()
                 nn.utils.clip_grad_norm_(self.net.parameters(), 0.5)
@@ -203,5 +224,6 @@ class PPOUpdater:
                 stats["value_loss"].append(value_loss.item())
                 stats["entropy"].append(entropy.item())
                 stats["critic_loss"].append(critic_loss_val)
+                stats["aux_loss"].append(aux_loss_val)
 
         return {k: float(np.mean(v)) for k, v in stats.items()}

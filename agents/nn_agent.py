@@ -84,14 +84,20 @@ class BiddingNet(nn.Module):
         lstm_layers:     LSTM layers, or Transformer encoder layers
         hand_encoder:    "suit" | "mlp"
         auction_encoder: "lstm" (default) | "transformer"
+        partner_pred:    if True, add a partner hand prediction head whose output
+                         is encoded and appended to the policy state. This creates
+                         an explicit incentive for bids to be informative about
+                         the bidder's hand (trained with an auxiliary BCE loss).
     """
 
     def __init__(self, hidden: int = 128, embed_dim: int = 32,
                  mlp_layers: int = 1, lstm_layers: int = 1,
-                 hand_encoder: str = "suit", auction_encoder: str = "lstm"):
+                 hand_encoder: str = "suit", auction_encoder: str = "lstm",
+                 partner_pred: bool = False):
         super().__init__()
-        self.hidden           = hidden
+        self.hidden            = hidden
         self._auction_enc_type = auction_encoder
+        self.partner_pred      = partner_pred
 
         if hand_encoder == "suit":
             self.hand_enc = SuitAwareHandEncoder(hidden, embed_dim, mlp_layers)
@@ -115,7 +121,16 @@ class BiddingNet(nn.Module):
             self.lstm = nn.LSTM(embed_dim, hidden,
                                 num_layers=lstm_layers, batch_first=True)
 
-        combined = hidden * 2
+        if partner_pred:
+            # Predict partner's 52-card hand from the auction embedding.
+            # The prediction is re-encoded through the shared hand encoder and
+            # appended to the state, giving the policy an explicit belief about
+            # what partner holds. Trained with auxiliary BCE loss.
+            self.partner_pred_head = nn.Linear(hidden, 52)
+            combined = hidden * 3   # own_hand + auction + partner_pred
+        else:
+            combined = hidden * 2   # own_hand + auction
+
         self.policy_head = _mlp(combined, hidden, NUM_BIDS, mlp_layers)
         self.value_head  = _mlp(combined, hidden, 1,        mlp_layers)
 
@@ -158,11 +173,22 @@ class BiddingNet(nn.Module):
         direction:   (B,) int64
         valid_mask:  (B, NUM_BIDS) bool  — True for legal actions
 
-        Returns: log_probs (B, NUM_BIDS),  values (B, 1)
+        Returns:
+            log_probs    (B, NUM_BIDS)
+            values       (B, 1)
+            partner_pred (B, 52) float32 sigmoid, or None if partner_pred=False
         """
         hand_emb    = self.hand_enc(hand)
         auction_emb = self._encode_auction(auction_seq, direction)
-        combined    = torch.cat([hand_emb, auction_emb], dim=-1)
+
+        if self.partner_pred:
+            partner_logits = self.partner_pred_head(auction_emb)    # (B, 52) raw logits
+            partner_prob   = torch.sigmoid(partner_logits)           # (B, 52) for hand encoder
+            partner_emb    = self.hand_enc(partner_prob)             # (B, H)
+            combined = torch.cat([hand_emb, auction_emb, partner_emb], dim=-1)
+        else:
+            partner_logits = None
+            combined       = torch.cat([hand_emb, auction_emb], dim=-1)
 
         logits = self.policy_head(combined)
         if valid_mask is not None:
@@ -170,7 +196,9 @@ class BiddingNet(nn.Module):
 
         log_probs = torch.log_softmax(logits, dim=-1)
         values    = self.value_head(combined)
-        return log_probs, values
+        # Return raw partner logits (not sigmoid) so the caller can use
+        # binary_cross_entropy_with_logits for numerical stability.
+        return log_probs, values, partner_logits
 
 
 class CentralizedCritic(nn.Module):
@@ -273,7 +301,7 @@ class NNAgent:
         for b in valid_bids:
             mask[0, b] = True
 
-        log_probs, _ = self.net(hand_t, seq_t, dir_t, mask)
+        log_probs, _, _ = self.net(hand_t, seq_t, dir_t, mask)
         return Categorical(logits=log_probs[0]).sample().item()
 
 

@@ -115,7 +115,7 @@ def collect_batch_vectorized(
         masks_t  = torch.from_numpy(batch_masks).to(device)
 
         with torch.no_grad():
-            log_probs_t, vals_t = net(hands_t, seqs_t, dirs_t, masks_t)
+            log_probs_t, vals_t, _ = net(hands_t, seqs_t, dirs_t, masks_t)
             if critic is not None:
                 north_t = torch.from_numpy(ns_hands[ns_idx, 0]).to(device)
                 south_t = torch.from_numpy(ns_hands[ns_idx, 1]).to(device)
@@ -200,7 +200,7 @@ def run_auction(net_agent: NNAgent, deal, device: str):
                 mask_t[0, b] = True
 
             with torch.no_grad():
-                log_probs_t, val_t = net_agent.net(hand_t, seq_t, dir_t, mask_t)
+                log_probs_t, val_t, _ = net_agent.net(hand_t, seq_t, dir_t, mask_t)
 
             action   = Categorical(logits=log_probs_t[0]).sample().item()
             log_prob = log_probs_t[0, action].item()
@@ -325,7 +325,7 @@ def eval_greedy(
                 for b in auctions[idx].valid_bids():
                     batch_masks[k, b] = True
 
-            log_probs_t, _ = net(
+            log_probs_t, _, _ = net(
                 torch.from_numpy(batch_hands).to(device),
                 torch.from_numpy(batch_seqs).to(device),
                 torch.from_numpy(batch_dirs).to(device),
@@ -413,6 +413,7 @@ def train(args):
         lstm_layers      = args.lstm_layers,
         hand_encoder     = args.hand_encoder,
         auction_encoder  = args.auction_encoder,
+        partner_pred     = args.partner_pred,
     ).to(device)
 
     # ---- Centralized critic (optional) ----
@@ -441,7 +442,8 @@ def train(args):
     updater = PPOUpdater(net, lr=args.lr, entropy_coef=args.entropy_coef, device=device,
                          critic=critic, critic_lr=args.critic_lr,
                          gae_lambda=args.gae_lambda,
-                         mini_batch_size=args.mini_batch_size)
+                         mini_batch_size=args.mini_batch_size,
+                         aux_coef=args.aux_coef)
     buffer  = RolloutBuffer()
 
     print(f"BiddingNet  hidden={args.hidden}  embed={args.embed_dim}  "
@@ -540,6 +542,8 @@ def train(args):
             elapsed      = time.time() - t0
             critic_loss_str = (f"  critic_loss={loss_stats['critic_loss']:.4f}"
                                if critic is not None else "")
+            aux_loss_str    = (f"  aux_loss={loss_stats['aux_loss']:.4f}"
+                               if args.partner_pred else "")
             # Label the training reward clearly so it is not confused with
             # eval/mean_imp (which is always absolute IMP regardless of mode).
             reward_label = {
@@ -552,7 +556,7 @@ def train(args):
                   f"mean_par_IMP={mean_par_imp:+.3f}  "
                   f"policy_loss={loss_stats['policy_loss']:.4f}  "
                   f"entropy={loss_stats['entropy']:.3f}"
-                  f"{critic_loss_str}  elapsed={elapsed:.0f}s")
+                  f"{critic_loss_str}{aux_loss_str}  elapsed={elapsed:.0f}s")
             with open(metrics_path, "a", newline="") as f:
                 csv.writer(f).writerow([episode, mean_reward, mean_par_imp,
                                         loss_stats["policy_loss"],
@@ -571,6 +575,8 @@ def train(args):
                 }
                 if critic is not None:
                     log_dict["train/critic_loss"] = loss_stats["critic_loss"]
+                if args.partner_pred:
+                    log_dict["train/aux_loss"] = loss_stats["aux_loss"]
                 wandb.log(log_dict, step=episode)
             window_imps.clear()
             window_pars.clear()
@@ -667,6 +673,13 @@ def build_parser() -> argparse.ArgumentParser:
     # Curriculum: weighted sampling to oversample game/slam hands
     parser.add_argument("--curriculum-weights", default=None,
                         help="Path to curriculum_weights.npy (from scripts/make_curriculum_weights.py).")
+    # Partner hand prediction auxiliary task
+    parser.add_argument("--partner-pred", action="store_true", default=False,
+                        help="Add a head that predicts partner's hand from the auction "
+                             "embedding. The prediction is re-encoded and appended to the "
+                             "policy state (hidden*3 input). Trained with auxiliary BCE loss.")
+    parser.add_argument("--aux-coef", type=float, default=1.0,
+                        help="Weight on the auxiliary BCE loss for partner hand prediction.")
     return parser
 
 
